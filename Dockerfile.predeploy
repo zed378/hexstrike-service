@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1
+# ============================================================================
+# HexStrike AI — image PRE-DEPLOY (code-scan)
+#
+# Ringan & cocok untuk runner CI cloud. Hanya berisi tool yang dipakai
+# `hexstrike_ci.py code-scan`:
+#   - trivy    (CVE dependency, secret, misconfig — via REST HexStrike)
+#   - checkov  (IaC — via REST HexStrike)
+#   - semgrep  (SAST — CLI)
+#   - gitleaks (secret — CLI)
+# plus hexstrike_server.py (dependency minimal, tanpa arsenal Kali/Go/GUI).
+# ============================================================================
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="hexstrike-ai-predeploy" \
+      org.opencontainers.image.description="HexStrike code-scan image (trivy/checkov/semgrep/gitleaks)"
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/usr/local/bin:$PATH"
+
+RUN find /etc/apt -type f \( -name "*.list" -o -name "*.sources" \) \
+    -exec sed -i 's|http://|https://|g' {} + || true
+    
+# System deps + git (dibutuhkan gitleaks/trivy untuk repo)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git jq unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# trivy (installer resmi)
+RUN curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+        | sh -s -- -b /usr/local/bin
+
+# gitleaks (release tarball)
+RUN GL_VER="$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name | sed 's/^v//')" \
+    && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" \
+        | tar -C /usr/local/bin -xz gitleaks
+
+WORKDIR /opt/hexstrike-ai
+
+# Python: dependency server minimal + checkov + semgrep (CLI)
+COPY requirements-scan.txt ./
+RUN pip install --upgrade pip \
+    && pip install -r requirements-scan.txt \
+    && pip install "checkov" "semgrep"
+
+# Source code (server + hexstrike_ci.py + hexstrike_webhook.py)
+COPY . .
+
+# 8888 = Flask HexStrike API, 9000 = webhook (endpoint /scan/code)
+EXPOSE 8888 9000
+
+# Webhook auto-menyalakan server; endpoint /scan/code menerima upload arsip repo
+ENV HEXSTRIKE_AUTOSTART_SERVER=1 \
+    HEXSTRIKE_SERVER=http://localhost:8888 \
+    WEBHOOK_PORT=9000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -fsS http://localhost:9000/health || exit 1
+
+# Default: service webhook (job CI cukup memanggil endpoint dari jarak jauh)
+CMD ["python3", "hexstrike_webhook.py"]

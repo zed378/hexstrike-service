@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1
+# ============================================================================
+# HexStrike AI — image POST-DEPLOY (pentest + webhook)
+#
+# Berisi tool DAST yang dipakai `hexstrike_ci.py pentest`:
+#   - nuclei   (scanner kerentanan)
+#   - httpx    (probing/tech-detect)   [ProjectDiscovery]
+#   - nikto    (web server scanner)
+#   - wafw00f  (deteksi WAF)
+# plus hexstrike_server.py + hexstrike_webhook.py (trigger scan on-demand).
+#
+# Jauh lebih kecil dari image full-arsenal; muat di runner CI cloud.
+# ============================================================================
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="hexstrike-ai-postdeploy" \
+      org.opencontainers.image.description="HexStrike pentest image (nuclei/httpx/nikto/wafw00f) + webhook"
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/usr/local/bin:$PATH"
+
+# Paksa apt memakai https (http ke mirror Debian bisa gagal di sebagian jaringan)
+RUN find /etc/apt -type f \( -name "*.list" -o -name "*.sources" \) \
+    -exec sed -i 's|http://|https://|g' {} + || true
+
+# System deps (perl utk nikto). nikto tidak selalu ada di apt Debian slim,
+# jadi dipasang dari sumber resmi di step berikutnya.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git jq unzip \
+        perl libnet-ssleay-perl \
+    && rm -rf /var/lib/apt/lists/*
+
+# nikto (skrip Perl) dari repo resmi + wrapper agar direktori plugin tetap terdeteksi
+RUN git clone --depth 1 https://github.com/sullo/nikto /opt/nikto \
+    && printf '#!/bin/sh\nexec perl /opt/nikto/program/nikto.pl "$@"\n' > /usr/local/bin/nikto \
+    && chmod +x /usr/local/bin/nikto
+
+# nuclei + httpx (ProjectDiscovery release binaries — tanpa toolchain Go)
+RUN NV="$(curl -fsSL https://api.github.com/repos/projectdiscovery/nuclei/releases/latest | jq -r .tag_name | sed 's/^v//')" \
+    && curl -fsSL "https://github.com/projectdiscovery/nuclei/releases/download/v${NV}/nuclei_${NV}_linux_amd64.zip" -o /tmp/nuclei.zip \
+    && unzip -o /tmp/nuclei.zip nuclei -d /usr/local/bin && rm -f /tmp/nuclei.zip \
+    && HV="$(curl -fsSL https://api.github.com/repos/projectdiscovery/httpx/releases/latest | jq -r .tag_name | sed 's/^v//')" \
+    && curl -fsSL "https://github.com/projectdiscovery/httpx/releases/download/v${HV}/httpx_${HV}_linux_amd64.zip" -o /tmp/httpx.zip \
+    && unzip -o /tmp/httpx.zip httpx -d /usr/local/bin && rm -f /tmp/httpx.zip \
+    && nuclei -update-templates || true
+
+WORKDIR /opt/hexstrike-ai
+
+# Python: dependency server minimal + wafw00f (CLI)
+COPY requirements-scan.txt ./
+RUN pip install --upgrade pip \
+    && pip install -r requirements-scan.txt \
+    && pip install "wafw00f"
+
+# Source code (server + hexstrike_ci.py + hexstrike_webhook.py)
+COPY . .
+
+# 8888 = Flask HexStrike API, 9000 = webhook trigger
+EXPOSE 8888 9000
+
+# Webhook auto-menyalakan server (lihat HEXSTRIKE_AUTOSTART_SERVER di webhook)
+ENV HEXSTRIKE_AUTOSTART_SERVER=1 \
+    HEXSTRIKE_SERVER=http://localhost:8888 \
+    WEBHOOK_PORT=9000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -fsS http://localhost:9000/health || exit 1
+
+# Default: service webhook (job CI meng-override script sesuai kebutuhan)
+CMD ["python3", "hexstrike_webhook.py"]

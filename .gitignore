@@ -1,0 +1,8 @@
+
+# Local env for LLM agent (do not commit)
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+hexstrike_env/

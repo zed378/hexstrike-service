@@ -1,0 +1,63 @@
+# ============================================================================
+# HexStrike AI — VPS deployment (two long-running endpoint services)
+#
+# Deploy the pre-deploy (code-scan) and post-deploy (pentest) images as
+# services your GitLab CI/CD pipeline calls over HTTP.
+#
+#   # 1. Point to your private registry images and set a secret token
+#   export REGISTRY_IMAGE=registry.example.com/security/hexstrike-ai
+#   export WEBHOOK_TOKEN=$(openssl rand -hex 24)
+#   # 2. Pull & run
+#   docker compose -f deploy/docker-compose.vps.yml pull
+#   docker compose -f deploy/docker-compose.vps.yml up -d
+#
+# Endpoints exposed:
+#   code-scan  : http://<vps>:9001/scan/code   (upload repo archive -> SAST)
+#   pentest    : http://<vps>:9000/trigger     (target URL -> DAST)
+#   health     : GET /health on each port
+#
+# SECURITY: put both behind a TLS reverse proxy (nginx/Caddy/Traefik) and only
+# allow your GitLab runner IPs. WEBHOOK_TOKEN (or WEBHOOK_HMAC_SECRET) is required.
+# ============================================================================
+
+services:
+  hexstrike-codescan:
+    image: ${REGISTRY_IMAGE:?set REGISTRY_IMAGE}:predeploy
+    container_name: hexstrike-codescan
+    ports:
+      - "${CODESCAN_PORT:-9001}:9000"
+    environment:
+      HEXSTRIKE_AUTOSTART_SERVER: "1"
+      HEXSTRIKE_SERVER: "http://localhost:8888"
+      WEBHOOK_PORT: "9000"
+      WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:?set WEBHOOK_TOKEN}"
+      WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
+      HEXSTRIKE_MAX_UPLOAD_MB: "${HEXSTRIKE_MAX_UPLOAD_MB:-300}"
+      HEXSTRIKE_DEFAULT_FAIL_ON: "${HEXSTRIKE_DEFAULT_FAIL_ON:-high}"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+  hexstrike-pentest:
+    image: ${REGISTRY_IMAGE:?set REGISTRY_IMAGE}:postdeploy
+    container_name: hexstrike-pentest
+    ports:
+      - "${PENTEST_PORT:-9000}:9000"
+    environment:
+      HEXSTRIKE_AUTOSTART_SERVER: "1"
+      HEXSTRIKE_SERVER: "http://localhost:8888"
+      WEBHOOK_PORT: "9000"
+      WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:?set WEBHOOK_TOKEN}"
+      WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
+      HEXSTRIKE_DEFAULT_FAIL_ON: "${HEXSTRIKE_DEFAULT_FAIL_ON:-high}"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3

@@ -1,0 +1,17 @@
+.git
+.gitignore
+*.md
+Dockerfile
+.dockerignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+hexstrike-dev/
+hexstrike_env/
+*.log
+.env
+.vscode/
+.idea/

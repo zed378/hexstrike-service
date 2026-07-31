@@ -1,0 +1,197 @@
+# ============================================================================
+# HexStrike AI — reusable GitLab CI template
+#
+# Sertakan di pipeline APLIKASI Anda (bukan repo hexstrike):
+#
+#   include:
+#     - project: 'security/hexstrike-ai'      # repo tempat file ini berada
+#       ref: master
+#       file: '/ci/hexstrike-scan.gitlab-ci.yml'
+#
+#   stages: [build, test, deploy, dast]
+#
+#   variables:
+#     HEXSTRIKE_IMAGE: registry.contoh.id/security/hexstrike-ai:latest
+#     HEXSTRIKE_PENTEST_TARGET: https://staging.aplikasi-saya.example
+#
+#   # pentest butuh URL hasil deploy -> jalankan SETELAH job deploy Anda:
+#   hexstrike_pentest:
+#     needs: ["deploy_staging"]
+#
+# Menyediakan 2 job:
+#   - hexstrike_code_scan  (stage: test)  -> cek kode sebelum deploy
+#   - hexstrike_pentest    (stage: dast)  -> scan hasil deploy
+#
+# Keduanya jalan DI DALAM image HexStrike (semua tool + hexstrike_ci.py ada),
+# menyalakan Flask server di background lalu memakai REST API-nya.
+# ============================================================================
+
+variables:
+  # Image PRE-DEPLOY (code-scan) & POST-DEPLOY (pentest) di registry privat Anda.
+  # WAJIB di-set di pipeline pemanggil (arahkan ke tag hasil build masing-masing).
+  HEXSTRIKE_PREDEPLOY_IMAGE: "hexstrike-ai:predeploy"
+  HEXSTRIKE_POSTDEPLOY_IMAGE: "hexstrike-ai:postdeploy"
+  # Ambang gagalkan pipeline: none|info|low|medium|high|critical
+  HEXSTRIKE_FAIL_ON: "high"
+  # Aktifkan ringkasan AI (vLLM) di laporan: "true"/"false" (advisory, tak mempengaruhi gate)
+  HEXSTRIKE_USE_LLM: "false"
+  # Profil pentest: quick|full
+  HEXSTRIKE_PENTEST_PROFILE: "quick"
+  # Root aplikasi HexStrike di dalam image
+  HEXSTRIKE_HOME: "/opt/hexstrike-ai"
+  HEXSTRIKE_SERVER: "http://localhost:8888"
+
+# --- template dasar: nyalakan server HexStrike di background lalu tunggu sehat ---
+# (image diset per-job: predeploy utk code-scan, postdeploy utk pentest)
+.hexstrike_base:
+  variables:
+    HEXSTRIKE_REPORT_DIR: "$CI_PROJECT_DIR/hexstrike-reports"
+  before_script:
+    - echo "🚀 Menyalakan HexStrike server di background…"
+    - (cd "$HEXSTRIKE_HOME" && python3 hexstrike_server.py --port 8888 >/tmp/hexstrike.log 2>&1 &)
+  artifacts:
+    when: always
+    paths:
+      - hexstrike-reports/
+    expire_in: 30 days
+
+# ---------------------------------------------------------------------------
+# 1) PRE-DEPLOY — cek kode (trivy fs + checkov + semgrep + gitleaks)
+# ---------------------------------------------------------------------------
+hexstrike_code_scan:
+  extends: .hexstrike_base
+  image: "$HEXSTRIKE_PREDEPLOY_IMAGE"
+  stage: test
+  script:
+    - >
+      python3 "$HEXSTRIKE_HOME/hexstrike_ci.py"
+      --server "$HEXSTRIKE_SERVER"
+      --report-dir "$HEXSTRIKE_REPORT_DIR"
+      --fail-on "$HEXSTRIKE_FAIL_ON"
+      $( [ "$HEXSTRIKE_USE_LLM" = "true" ] && echo --use-llm )
+      code-scan --path "$CI_PROJECT_DIR"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+# ---------------------------------------------------------------------------
+# 2) POST-DEPLOY — pentest terhadap URL hasil deploy
+#    Set HEXSTRIKE_PENTEST_TARGET & (biasanya) `needs: [job_deploy_anda]`.
+# ---------------------------------------------------------------------------
+hexstrike_pentest:
+  extends: .hexstrike_base
+  image: "$HEXSTRIKE_POSTDEPLOY_IMAGE"
+  stage: dast
+  script:
+    - test -n "$HEXSTRIKE_PENTEST_TARGET" || { echo "❌ HEXSTRIKE_PENTEST_TARGET belum di-set"; exit 2; }
+    - >
+      python3 "$HEXSTRIKE_HOME/hexstrike_ci.py"
+      --server "$HEXSTRIKE_SERVER"
+      --report-dir "$HEXSTRIKE_REPORT_DIR"
+      --fail-on "$HEXSTRIKE_FAIL_ON"
+      $( [ "$HEXSTRIKE_USE_LLM" = "true" ] && echo --use-llm )
+      pentest --target "$HEXSTRIKE_PENTEST_TARGET" --profile "$HEXSTRIKE_PENTEST_PROFILE"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: manual
+      allow_failure: true
+
+# ===========================================================================
+# 3) CODE QUALITY — job linter per-bahasa (auto-aktif via `rules: exists`)
+#    Terpisah dari security check HexStrike. Berjalan di image ringan tiap
+#    bahasa (bukan image HexStrike). Default advisory (allow_failure: true);
+#    untuk MENGGAGALKAN pipeline pada masalah lint, override di pipeline
+#    pemanggil, mis:   lint_python: { allow_failure: false }
+#
+#    Ruff & golangci-lint menghasilkan Code Quality report yang tampil di
+#    widget Merge Request GitLab.
+# ===========================================================================
+
+# --- Python: ruff -----------------------------------------------------------
+lint_python:
+  stage: test
+  image: python:3.12-slim
+  allow_failure: true
+  before_script:
+    - pip install --no-cache-dir ruff
+  script:
+    - echo "🐍 ruff check…"
+    - ruff check . || RUFF_RC=$?
+    - ruff check --output-format=gitlab . > gl-code-quality-ruff.json || true
+    - exit ${RUFF_RC:-0}
+  artifacts:
+    when: always
+    reports:
+      codequality: gl-code-quality-ruff.json
+    paths:
+      - gl-code-quality-ruff.json
+    expire_in: 30 days
+  rules:
+    - exists:
+        - "**/*.py"
+
+# --- JavaScript/TypeScript: eslint ------------------------------------------
+lint_js:
+  stage: test
+  image: node:20-alpine
+  allow_failure: true
+  script:
+    - echo "🟨 eslint…"
+    - if [ -f package-lock.json ]; then npm ci --no-audit --no-fund || npm install --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+    - npx --yes eslint .
+  rules:
+    - exists:
+        - ".eslintrc"
+        - ".eslintrc.*"
+        - "eslint.config.js"
+        - "eslint.config.mjs"
+        - "eslint.config.cjs"
+
+# --- Go: golangci-lint ------------------------------------------------------
+lint_go:
+  stage: test
+  image: golangci/golangci-lint:latest
+  allow_failure: true
+  script:
+    - echo "🐹 golangci-lint run…"
+    - golangci-lint run ./... --out-format code-climate > gl-code-quality-go.json || GLC_RC=$?
+    - golangci-lint run ./... || true
+    - exit ${GLC_RC:-0}
+  artifacts:
+    when: always
+    reports:
+      codequality: gl-code-quality-go.json
+    paths:
+      - gl-code-quality-go.json
+    expire_in: 30 days
+  rules:
+    - exists:
+        - "**/*.go"
+
+# --- Shell: shellcheck ------------------------------------------------------
+lint_shell:
+  stage: test
+  image: koalaman/shellcheck-alpine:stable
+  allow_failure: true
+  script:
+    - echo "🐚 shellcheck…"
+    - files=$(find . -type f -name "*.sh" -not -path "*/node_modules/*"); test -n "$files" || exit 0
+    - shellcheck $files
+  rules:
+    - exists:
+        - "**/*.sh"
+
+# --- Dockerfile: hadolint ---------------------------------------------------
+lint_dockerfile:
+  stage: test
+  image: hadolint/hadolint:latest-debian
+  allow_failure: true
+  script:
+    - echo "🐳 hadolint…"
+    - find . -type f \( -name "Dockerfile" -o -name "Dockerfile.*" -o -name "*.Dockerfile" \) -not -path "*/node_modules/*" -print0 | xargs -0 -r -n1 hadolint
+  rules:
+    - exists:
+        - "**/Dockerfile"
+        - "**/Dockerfile.*"
+        - "**/*.Dockerfile"

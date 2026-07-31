@@ -1,0 +1,115 @@
+# ============================================================================
+# HexStrike AI — reusable GitLab CI template (REMOTE endpoint mode)
+#
+# Use this when HexStrike runs as long-running services on your VPS and the
+# GitLab runner only CALLS the endpoints (see deploy/docker-compose.vps.yml).
+# Jobs run in a tiny alpine image (curl+jq+tar) — no HexStrike image needed.
+#
+# Include in your APPLICATION .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'security/hexstrike-ai'
+#       ref: master
+#       file: '/ci/hexstrike-remote.gitlab-ci.yml'
+#
+#   stages: [build, test, deploy, dast]
+#
+#   variables:
+#     HEXSTRIKE_CODESCAN_URL: https://hexstrike.example.com/codescan   # -> :9001
+#     HEXSTRIKE_PENTEST_URL:  https://hexstrike.example.com/pentest    # -> :9000
+#     HEXSTRIKE_PENTEST_TARGET: https://staging.my-app.example
+#     HEXSTRIKE_FAIL_ON: high
+#
+#   hexstrike_pentest:
+#     needs: ["deploy_staging"]
+#
+# REQUIRED (masked) CI/CD Variable:
+#   HEXSTRIKE_WEBHOOK_TOKEN   -> the WEBHOOK_TOKEN configured on the VPS services
+#
+# Gate is computed server-side from the tool findings vs HEXSTRIKE_FAIL_ON; the
+# job fails when the service reports gate_failed=true.
+# ============================================================================
+
+variables:
+  HEXSTRIKE_CODESCAN_URL: ""            # base URL of the pre-deploy service (/scan/code)
+  HEXSTRIKE_PENTEST_URL: ""             # base URL of the post-deploy service (/trigger)
+  HEXSTRIKE_FAIL_ON: "high"             # none|info|low|medium|high|critical
+  HEXSTRIKE_PENTEST_PROFILE: "quick"    # quick|full
+  HEXSTRIKE_POLL_TIMEOUT: "1800"        # seconds to wait for a job to finish
+  HEXSTRIKE_POLL_INTERVAL: "10"         # seconds between status polls
+  # Extra tar excludes for the uploaded repo (space-separated globs)
+  HEXSTRIKE_TAR_EXCLUDES: "node_modules .venv venv dist build .terraform"
+
+.hexstrike_remote_base:
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache curl jq tar >/dev/null
+    - test -n "$HEXSTRIKE_WEBHOOK_TOKEN" || { echo "❌ HEXSTRIKE_WEBHOOK_TOKEN not set"; exit 2; }
+    # poll_job <base_url> <job_id> : wait until completed, print summary, return gate result
+    - |
+      cat > /usr/local/bin/poll_job <<'SH'
+      #!/bin/sh
+      base="$1"; jid="$2"
+      deadline=$(( $(date +%s) + ${HEXSTRIKE_POLL_TIMEOUT:-1800} ))
+      while :; do
+        resp=$(curl -fsS -H "X-Webhook-Token: $HEXSTRIKE_WEBHOOK_TOKEN" "$base/status/$jid" || echo '{}')
+        st=$(echo "$resp" | jq -r '.status // "unknown"')
+        if [ "$st" = "completed" ]; then
+          echo "$resp" | jq '{status, exit_code, gate_failed, results}'
+          gate=$(echo "$resp" | jq -r '.gate_failed // false')
+          [ "$gate" = "true" ] && { echo "❌ GATE FAILED (findings >= $HEXSTRIKE_FAIL_ON)"; exit 1; }
+          echo "✅ GATE PASSED"; exit 0
+        fi
+        [ $(date +%s) -gt $deadline ] && { echo "❌ timeout waiting for job $jid"; exit 2; }
+        echo "… job $jid status=$st"; sleep "${HEXSTRIKE_POLL_INTERVAL:-10}"
+      done
+      SH
+    - chmod +x /usr/local/bin/poll_job
+
+# ---------------------------------------------------------------------------
+# PRE-DEPLOY — upload repo archive to the code-scan service (SAST)
+# ---------------------------------------------------------------------------
+hexstrike_code_scan:
+  extends: .hexstrike_remote_base
+  stage: test
+  script:
+    - test -n "$HEXSTRIKE_CODESCAN_URL" || { echo "❌ HEXSTRIKE_CODESCAN_URL not set"; exit 2; }
+    - echo "📦 Packaging repository…"
+    - EXC=""; for e in $HEXSTRIKE_TAR_EXCLUDES; do EXC="$EXC --exclude=$e"; done
+    - tar czf /tmp/repo.tgz $EXC -C "$CI_PROJECT_DIR" .
+    - echo "⬆️  Uploading to $HEXSTRIKE_CODESCAN_URL/scan/code…"
+    - |
+      resp=$(curl -fsS -X POST "$HEXSTRIKE_CODESCAN_URL/scan/code" \
+        -H "X-Webhook-Token: $HEXSTRIKE_WEBHOOK_TOKEN" \
+        -F "file=@/tmp/repo.tgz" -F "fail_on=$HEXSTRIKE_FAIL_ON")
+      echo "$resp"
+      jid=$(echo "$resp" | jq -r '.job_id // empty')
+      test -n "$jid" || { echo "❌ no job_id returned"; exit 2; }
+      poll_job "$HEXSTRIKE_CODESCAN_URL" "$jid"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+# ---------------------------------------------------------------------------
+# POST-DEPLOY — trigger a pentest against the deployed URL (DAST)
+# ---------------------------------------------------------------------------
+hexstrike_pentest:
+  extends: .hexstrike_remote_base
+  stage: dast
+  script:
+    - test -n "$HEXSTRIKE_PENTEST_URL" || { echo "❌ HEXSTRIKE_PENTEST_URL not set"; exit 2; }
+    - test -n "$HEXSTRIKE_PENTEST_TARGET" || { echo "❌ HEXSTRIKE_PENTEST_TARGET not set"; exit 2; }
+    - echo "🚀 Triggering pentest on $HEXSTRIKE_PENTEST_TARGET…"
+    - |
+      resp=$(curl -fsS -X POST "$HEXSTRIKE_PENTEST_URL/trigger" \
+        -H "X-Webhook-Token: $HEXSTRIKE_WEBHOOK_TOKEN" -H "Content-Type: application/json" \
+        -d "{\"target\":\"$HEXSTRIKE_PENTEST_TARGET\",\"action\":\"pentest\",\"profile\":\"$HEXSTRIKE_PENTEST_PROFILE\",\"fail_on\":\"$HEXSTRIKE_FAIL_ON\"}")
+      echo "$resp"
+      jid=$(echo "$resp" | jq -r '.job_id // empty')
+      test -n "$jid" || { echo "❌ no job_id returned"; exit 2; }
+      poll_job "$HEXSTRIKE_PENTEST_URL" "$jid"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_success
+    - when: manual
+      allow_failure: true

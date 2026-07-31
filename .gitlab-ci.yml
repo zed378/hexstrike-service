@@ -1,0 +1,143 @@
+# ============================================================================
+# HexStrike AI — GitLab CI/CD
+#
+# Alur:
+#   - Merge Request / branch biasa  -> lint cepat (syntax Python + Dockerfile),
+#     TANPA build image raksasa (~15-25GB) supaya pipeline tetap ringan.
+#   - Push ke branch default        -> build + smoke test + push tag :edge, :<sha>
+#   - Push git tag (mis. v6.0.1)    -> build + smoke test + push tag :<tag>, :latest
+#
+# WAJIB di-set sebagai CI/CD Variables (Settings > CI/CD > Variables):
+#   REGISTRY_IMAGE   -> path image di registry privat Anda
+#                       (mis. registry.contoh.id/security/hexstrike-ai)
+#   REGISTRY         -> host registry (mis. registry.contoh.id)  [opsional bila = GitLab registry]
+#   REGISTRY_USER    -> user untuk docker login  (masked)
+#   REGISTRY_PASSWORD-> password/token           (masked, protected)
+#
+# Jika memakai GitLab Container Registry bawaan, biarkan default ($CI_REGISTRY*).
+# Butuh runner dengan executor docker+dind dan DISK CUKUP (image sangat besar).
+# ============================================================================
+
+stages:
+  - lint
+  - build
+
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_BUILDKIT: "1"
+  # Override lewat CI/CD Variables untuk registry privat Anda:
+  REGISTRY: "$CI_REGISTRY"
+  REGISTRY_IMAGE: "$CI_REGISTRY_IMAGE"
+
+# --- helper login registry (pakai REGISTRY_USER/PASSWORD bila di-set, else GitLab) ---
+.docker_login: &docker_login
+  - |
+    REG_USER="${REGISTRY_USER:-$CI_REGISTRY_USER}"
+    REG_PASS="${REGISTRY_PASSWORD:-$CI_REGISTRY_PASSWORD}"
+    echo "🔐 docker login ${REGISTRY}"
+    echo "$REG_PASS" | docker login "$REGISTRY" -u "$REG_USER" --password-stdin
+
+# ---------------------------------------------------------------------------
+# LINT — cepat, jalan di setiap MR/branch/tag
+# ---------------------------------------------------------------------------
+lint:python:
+  stage: lint
+  image: python:3.12-slim
+  script:
+    - echo "🐍 Cek sintaks Python…"
+    - python -m py_compile hexstrike_server.py hexstrike_mcp.py hexstrike_openai_agent.py
+  rules:
+    - when: always
+
+lint:dockerfile:
+  stage: lint
+  image: hadolint/hadolint:latest-debian
+  script:
+    - echo "🐳 Lint Dockerfile (hadolint)…"
+    # DL3008 (pin apt versions) & SC lint di-relaks: daftar tool panjang & pakai || true by design.
+    - hadolint --ignore DL3008 --ignore DL3013 --ignore DL3018 --ignore DL4006 --ignore SC2015 Dockerfile
+  allow_failure: true
+  rules:
+    - when: always
+
+check:dockerfile:
+  stage: lint
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  script:
+    - echo "🔎 docker build --check (validasi tanpa build penuh)…"
+    - docker build --check .
+  rules:
+    - when: always
+
+# ---------------------------------------------------------------------------
+# BUILD + SMOKE TEST + PUSH — hanya di branch default & tag
+# ---------------------------------------------------------------------------
+.build_template:
+  stage: build
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  timeout: 3h
+  before_script:
+    - *docker_login
+  variables:
+    # Di-override oleh matrix (full / predeploy / postdeploy)
+    DOCKERFILE: "Dockerfile"
+    TAG_SUFFIX: ""
+  script:
+    - TAG="${PRIMARY_TAG}${TAG_SUFFIX}"
+    - echo "🏗️  Build ${REGISTRY_IMAGE}:${TAG} dari ${DOCKERFILE} …"
+    - docker build --pull -f "${DOCKERFILE}" -t "${REGISTRY_IMAGE}:${TAG}" .
+    - echo "🧪 Smoke test — jalankan container & cek /health (server :8888)…"
+    - docker rm -f hexstrike-smoke 2>/dev/null || true
+    - docker run -d --name hexstrike-smoke "${REGISTRY_IMAGE}:${TAG}"
+    - |
+      ok=0
+      for i in $(seq 1 40); do
+        if docker exec hexstrike-smoke sh -c 'curl -fsS http://localhost:8888/health >/dev/null 2>&1'; then
+          echo "✅ /health OK (percobaan $i)"; ok=1; break
+        fi
+        echo "… menunggu server ($i/40)"; sleep 3
+      done
+      docker logs --tail 40 hexstrike-smoke || true
+      docker rm -f hexstrike-smoke || true
+      test "$ok" = "1" || { echo "❌ Smoke test gagal"; exit 1; }
+    - echo "📦 Push tag…"
+    - docker push "${REGISTRY_IMAGE}:${TAG}"
+    - |
+      for extra in $EXTRA_TAGS; do
+        docker tag "${REGISTRY_IMAGE}:${TAG}" "${REGISTRY_IMAGE}:${extra}${TAG_SUFFIX}"
+        docker push "${REGISTRY_IMAGE}:${extra}${TAG_SUFFIX}"
+        echo "   ↳ pushed ${REGISTRY_IMAGE}:${extra}${TAG_SUFFIX}"
+      done
+
+# Matriks 3 image: full (arsenal lengkap), predeploy (code-scan), postdeploy (pentest+webhook)
+.image_matrix: &image_matrix
+  - DOCKERFILE: "Dockerfile"
+    TAG_SUFFIX: ""
+  - DOCKERFILE: "Dockerfile.predeploy"
+    TAG_SUFFIX: "-predeploy"
+  - DOCKERFILE: "Dockerfile.postdeploy"
+    TAG_SUFFIX: "-postdeploy"
+
+build:edge:
+  extends: .build_template
+  parallel:
+    matrix: *image_matrix
+  variables:
+    PRIMARY_TAG: "$CI_COMMIT_SHORT_SHA"
+    EXTRA_TAGS: "edge"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+build:release:
+  extends: .build_template
+  parallel:
+    matrix: *image_matrix
+  variables:
+    PRIMARY_TAG: "$CI_COMMIT_TAG"
+    EXTRA_TAGS: "latest"
+  rules:
+    - if: '$CI_COMMIT_TAG'

@@ -1,0 +1,112 @@
+# ============================================================================
+# HexStrike AI — docker-compose
+#
+#   docker compose up -d hexstrike-server          # jalankan Flask API + tools
+#   docker compose run --rm agent "Recon scanme.nmap.org"   # agent LLM lokal
+#   docker compose run --rm agent                  # agent mode interaktif (REPL)
+#
+# LLM lokal (vLLM) diasumsikan berjalan DI LUAR compose ini (mis. di GPU host).
+# Atur endpoint-nya lewat file .env (lihat .env.example).
+# ============================================================================
+
+services:
+  hexstrike-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${REGISTRY_IMAGE:-hexstrike-ai}:${IMAGE_TAG:-latest}
+    container_name: hexstrike-server
+    ports:
+      - "${HEXSTRIKE_PORT:-8888}:8888"
+    # Banyak tool butuh privilege jaringan (raw socket: nmap -sS, masscan, arp-scan).
+    # Aktifkan sesuai kebutuhan; hapus jika ingin lebih ketat.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+  # Agent yang menyetir tools HexStrike memakai LLM lokal OpenAI-compatible.
+  # Tidak ikut `up` biasa (pakai profile); dijalankan on-demand via `compose run`.
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${REGISTRY_IMAGE:-hexstrike-ai}:${IMAGE_TAG:-latest}
+    profiles: ["agent"]
+    depends_on:
+      hexstrike-server:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      HEXSTRIKE_SERVER: ${HEXSTRIKE_SERVER:-http://hexstrike-server:8888}
+    # Agar OPENAI_BASE_URL=host.docker.internal berfungsi juga di Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["python3", "hexstrike_openai_agent.py"]
+    stdin_open: true
+    tty: true
+
+  # Service webhook pre-deploy: endpoint /scan/code (upload arsip repo -> code-scan)
+  #   docker compose --profile webhook up -d code-scan-webhook
+  #   curl -F file=@repo.tgz -F fail_on=high -H "X-Webhook-Token: $WEBHOOK_TOKEN" \
+  #        http://localhost:9001/scan/code
+  code-scan-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.predeploy
+    image: ${REGISTRY_IMAGE:-hexstrike-ai}:predeploy
+    profiles: ["webhook"]
+    ports:
+      - "${CODESCAN_WEBHOOK_PORT:-9001}:9000"
+    environment:
+      HEXSTRIKE_AUTOSTART_SERVER: "1"
+      HEXSTRIKE_SERVER: "http://localhost:8888"
+      WEBHOOK_PORT: "9000"
+      WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:-}"
+      WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
+      HEXSTRIKE_MAX_UPLOAD_MB: "${HEXSTRIKE_MAX_UPLOAD_MB:-300}"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+  # Service webhook post-deploy: memicu security scan/pentest on-demand
+  #   docker compose --profile webhook up -d pentest-webhook
+  #   curl -X POST http://localhost:9000/trigger -H "X-Webhook-Token: $WEBHOOK_TOKEN" \
+  #        -H 'Content-Type: application/json' \
+  #        -d '{"target":"https://staging.example","action":"pentest","profile":"quick"}'
+  pentest-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.postdeploy
+    image: ${REGISTRY_IMAGE:-hexstrike-ai}:postdeploy
+    profiles: ["webhook"]
+    ports:
+      - "${WEBHOOK_PORT:-9000}:9000"
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      HEXSTRIKE_AUTOSTART_SERVER: "1"
+      HEXSTRIKE_SERVER: "http://localhost:8888"
+      WEBHOOK_PORT: "9000"
+      # WAJIB: set token rahasia (atau WEBHOOK_HMAC_SECRET) agar /trigger aktif.
+      WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:-}"
+      WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
