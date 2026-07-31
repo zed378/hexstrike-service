@@ -478,8 +478,8 @@ include:
 stages: [build, test, deploy, dast]
 
 variables:
-  HEXSTRIKE_CODESCAN_URL: https://hexstrike.example.com/codescan   # VPS :9001
-  HEXSTRIKE_PENTEST_URL:  https://hexstrike.example.com/pentest    # VPS :9000
+  HEXSTRIKE_CODESCAN_URL: https://codescan.hexstrike.example.com   # proxy -> VPS :9001
+  HEXSTRIKE_PENTEST_URL:  https://pentest.hexstrike.example.com    # proxy -> VPS :9000
   HEXSTRIKE_PENTEST_TARGET: https://staging.my-app.example
   HEXSTRIKE_FAIL_ON: high
 
@@ -493,6 +493,8 @@ the deployed URL to `/trigger`; both poll `/status/<job_id>` and fail the pipeli
 when the service reports `gate_failed`. Full details in [`INTEGRATIONS.md`](INTEGRATIONS.md) §4.7.
 
 > Put the VPS endpoints behind a **TLS reverse proxy** and restrict to your runner IPs.
+> Using **Nginx Proxy Manager** on a separate VM? Step-by-step guide (including the
+> required `client_max_body_size` for uploads) in [`deploy/NPM-SETUP.md`](deploy/NPM-SETUP.md).
 
 ---
 

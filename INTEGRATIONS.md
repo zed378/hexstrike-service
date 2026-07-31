@@ -252,8 +252,11 @@ docker compose -f deploy/docker-compose.vps.yml pull
 docker compose -f deploy/docker-compose.vps.yml up -d
 # code-scan -> http://<vps>:9001 , pentest -> http://<vps>:9000
 ```
-> Put both behind a **TLS reverse proxy** (nginx/Caddy/Traefik) and restrict to
-> your GitLab runner IPs. `WEBHOOK_TOKEN` (or `WEBHOOK_HMAC_SECRET`) is required.
+> Put both behind a **TLS reverse proxy** and restrict to your GitLab runner IPs.
+> `WEBHOOK_TOKEN` (or `WEBHOOK_HMAC_SECRET`) is required. Using **Nginx Proxy
+> Manager** (on a separate VM)? See [`deploy/NPM-SETUP.md`](deploy/NPM-SETUP.md) —
+> and remember to raise `client_max_body_size` (≥ `HEXSTRIKE_MAX_UPLOAD_MB`) or
+> code-archive uploads fail with `413`.
 
 **2) In your application `.gitlab-ci.yml`**, include the remote template
 ([`ci/hexstrike-remote.gitlab-ci.yml`](ci/hexstrike-remote.gitlab-ci.yml)):
@@ -266,8 +269,8 @@ include:
 stages: [build, test, deploy, dast]
 
 variables:
-  HEXSTRIKE_CODESCAN_URL: https://hexstrike.example.com/codescan   # your VPS :9001
-  HEXSTRIKE_PENTEST_URL:  https://hexstrike.example.com/pentest    # your VPS :9000
+  HEXSTRIKE_CODESCAN_URL: https://codescan.hexstrike.example.com   # NPM -> VPS :9001
+  HEXSTRIKE_PENTEST_URL:  https://pentest.hexstrike.example.com    # NPM -> VPS :9000
   HEXSTRIKE_PENTEST_TARGET: https://staging.my-app.example
   HEXSTRIKE_FAIL_ON: high
 
@@ -285,12 +288,12 @@ Set the masked CI/CD variable **`HEXSTRIKE_WEBHOOK_TOKEN`** = the VPS `WEBHOOK_T
 ```bash
 # code-scan
 tar czf repo.tgz --exclude=.git --exclude=node_modules .
-curl -s -X POST https://hexstrike.example.com/codescan/scan/code \
+curl -s -X POST https://codescan.hexstrike.example.com/scan/code \
   -H "X-Webhook-Token: $TOKEN" -F "file=@repo.tgz" -F "fail_on=high"
 # -> {"job_id":"...","status":"accepted"} ; then GET /status/<job_id>
 
 # pentest
-curl -s -X POST https://hexstrike.example.com/pentest/trigger \
+curl -s -X POST https://pentest.hexstrike.example.com/trigger \
   -H "X-Webhook-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"target":"https://staging.example","action":"pentest","profile":"quick","fail_on":"high"}'
 ```
