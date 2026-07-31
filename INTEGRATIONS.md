@@ -301,6 +301,35 @@ curl -s -X POST https://pentest.hexstrike.example.com/trigger \
 Full JSON/Markdown reports remain on the VPS under `hexstrike-reports/<job_id>/`;
 the `/status` response returns severity counts and the gate result.
 
+### 4.8 Metric dashboard (SQLite-backed)
+
+Every completed job is persisted to a **SQLite** DB
+(`/opt/hexstrike-ai/hexstrike-reports/hexstrike.db`, on a persistent volume) and
+surfaced as a metric dashboard on the **same webhook port**:
+
+| Endpoint | What |
+|----------|------|
+| `GET /dashboard` | metric dashboard (KPIs, findings-by-severity, 14-day trend, top targets, recent runs) — auto-refresh 30s |
+| `GET /dashboard/<run_id>` | single report detail (per-severity KPIs + full findings table) |
+| `GET /api/metrics` | aggregate metrics as JSON |
+| `GET /api/reports` / `/api/reports/<id>` | recent list / one report (by `run_id` or `job_id`) as JSON |
+
+Auth: if `WEBHOOK_TOKEN` is set, the dashboard/API require the token via header
+`X-Webhook-Token` **or** query `?token=<WEBHOOK_TOKEN>` (browser-friendly — links
+carry the token). If no token is configured it is open (dev only). In production
+also restrict it at the reverse proxy (NPM Access List).
+
+```bash
+# open in a browser (behind NPM this is https://codescan.hexstrike.example.com/dashboard?token=...)
+curl "http://<vps>:9001/dashboard?token=$WEBHOOK_TOKEN"
+curl "http://<vps>:9001/api/metrics?token=$WEBHOOK_TOKEN"
+```
+
+Persistence: the DB lives on the `codescan_reports` / `pentest_reports` volumes
+(declared via `VOLUME` in the images and named volumes in the compose files), so
+dashboard history survives container restarts/upgrades. Each service has its own
+DB (code-scan service shows code-scans; pentest service shows pentests).
+
 ### 4.6 About "code quality" — honest scope
 HexStrike is a **pentest/security** framework, not a *code quality* tool. What it
 can do to code is **security**: dependency CVEs, secrets, IaC misconfig, semgrep

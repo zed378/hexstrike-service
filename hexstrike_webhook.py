@@ -63,7 +63,9 @@ import zipfile
 from typing import Any, Dict, List, Optional
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
+
+import hexstrike_db as db
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CI_SCRIPT = os.path.join(HERE, "hexstrike_ci.py")
@@ -71,6 +73,7 @@ SERVER_SCRIPT = os.path.join(HERE, "hexstrike_server.py")
 
 HEXSTRIKE_SERVER = os.environ.get("HEXSTRIKE_SERVER", "http://localhost:8888")
 REPORT_ROOT = os.environ.get("HEXSTRIKE_REPORT_ROOT", os.path.join(HERE, "hexstrike-reports"))
+DB_PATH = os.environ.get("HEXSTRIKE_DB_PATH", os.path.join(REPORT_ROOT, "hexstrike.db"))
 DEFAULT_FAIL_ON = os.environ.get("HEXSTRIKE_DEFAULT_FAIL_ON", "high")
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 WEBHOOK_HMAC_SECRET = os.environ.get("WEBHOOK_HMAC_SECRET", "")
@@ -173,17 +176,30 @@ def run_job(job_id: str, params: Dict[str, Any], auth_headers: List[str]) -> Non
                 lf.write(f"\nERROR: {exc}\n")
         overall_rc = overall_rc or rc
 
-        # Baca ringkasan bila ada
+        # Baca ringkasan bila ada + simpan ke SQLite untuk dashboard
         summary_path = os.path.join(report_dir, f"hexstrike-{action}.json")
         if os.path.exists(summary_path):
             try:
                 with open(summary_path, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
+                counts = data.get("counts", {})
                 job.setdefault("results", {})[action] = {
-                    "counts": data.get("counts", {}),
+                    "counts": counts,
                     "total": data.get("total", 0),
                     "gate_failed": rc == 1,
                 }
+                try:
+                    db.save_report(
+                        DB_PATH, run_id=f"{job_id}:{action}", job_id=job_id, kind=action,
+                        target=params.get("target", ""), fail_on=params["fail_on"],
+                        status="completed", gate_failed=(rc == 1), exit_code=rc,
+                        counts=counts, findings=data.get("findings", []),
+                        started_at=job.get("started_at"),
+                        finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        authenticated=bool(auth_headers),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log(f"⚠️  gagal simpan ke DB: {exc}")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -341,6 +357,57 @@ def scan_code():
     return jsonify({"job_id": job_id, "status": "accepted"}), 202
 
 
+# --------------------------------------------------------------------------- #
+# Dashboard metrik + API (baca dari SQLite)
+# Proteksi: bila WEBHOOK_TOKEN di-set, view butuh token via header X-Webhook-Token
+# atau query ?token=... (ramah browser). Bila tak ada token dikonfigurasi -> terbuka
+# (mode dev) — di produksi lindungi juga di reverse proxy (NPM Access List).
+# --------------------------------------------------------------------------- #
+def view_authorized(req) -> bool:
+    if not WEBHOOK_TOKEN:
+        return True
+    provided = req.headers.get("X-Webhook-Token", "") or req.args.get("token", "")
+    return hmac.compare_digest(provided, WEBHOOK_TOKEN)
+
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    if not view_authorized(request):
+        return Response("unauthorized (append ?token=...)", status=401, mimetype="text/plain")
+    return Response(db.render_dashboard(DB_PATH, token=request.args.get("token")), mimetype="text/html")
+
+
+@app.route("/dashboard/<path:ident>", methods=["GET"])
+def dashboard_detail(ident: str):
+    if not view_authorized(request):
+        return Response("unauthorized (append ?token=...)", status=401, mimetype="text/plain")
+    return Response(db.render_report_detail(DB_PATH, ident, token=request.args.get("token")), mimetype="text/html")
+
+
+@app.route("/api/metrics", methods=["GET"])
+def api_metrics():
+    if not view_authorized(request):
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(db.get_metrics(DB_PATH))
+
+
+@app.route("/api/reports", methods=["GET"])
+def api_reports():
+    if not view_authorized(request):
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(db.get_metrics(DB_PATH).get("recent", []))
+
+
+@app.route("/api/reports/<path:ident>", methods=["GET"])
+def api_report_detail(ident: str):
+    if not view_authorized(request):
+        return jsonify({"error": "unauthorized"}), 401
+    reports = db.get_reports_by_id(DB_PATH, ident)
+    if not reports:
+        return jsonify({"error": "report tidak ditemukan"}), 404
+    return jsonify(reports)
+
+
 @app.route("/status/<job_id>", methods=["GET"])
 def status(job_id: str):
     job = _JOBS.get(job_id)
@@ -383,9 +450,11 @@ def maybe_autostart_server() -> None:
 
 def main() -> int:
     os.makedirs(REPORT_ROOT, exist_ok=True)
+    db.init_db(DB_PATH)
     if not WEBHOOK_TOKEN and not WEBHOOK_HMAC_SECRET:
         log("⚠️  WEBHOOK_TOKEN / WEBHOOK_HMAC_SECRET belum di-set — /trigger akan menolak semua request.")
     maybe_autostart_server()
+    log(f"📊 dashboard: http://0.0.0.0:{WEBHOOK_PORT}/dashboard  (db: {DB_PATH})")
     log(f"listening on 0.0.0.0:{WEBHOOK_PORT} (HexStrike server: {HEXSTRIKE_SERVER})")
     app.run(host="0.0.0.0", port=WEBHOOK_PORT, threaded=True)
     return 0

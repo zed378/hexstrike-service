@@ -4,9 +4,10 @@
 # Deploy the pre-deploy (code-scan) and post-deploy (pentest) images as
 # services your GitLab CI/CD pipeline calls over HTTP.
 #
-#   # 1. Point to your private registry images and set a secret token
-#   export REGISTRY_IMAGE=registry.example.com/security/hexstrike-ai
+#   # 1. Set a secret token (images default to Docker Hub zed378/hexstrike-ai)
 #   export WEBHOOK_TOKEN=$(openssl rand -hex 24)
+#   #    Override only if you mirror to a private registry:
+#   #    export REGISTRY_IMAGE=registry.example.com/security/hexstrike-ai
 #   # 2. Pull & run
 #   docker compose -f deploy/docker-compose.vps.yml pull
 #   docker compose -f deploy/docker-compose.vps.yml up -d
@@ -22,7 +23,7 @@
 
 services:
   hexstrike-codescan:
-    image: ${REGISTRY_IMAGE:?set REGISTRY_IMAGE}:predeploy
+    image: ${REGISTRY_IMAGE:-zed378/hexstrike-ai}:predeploy
     container_name: hexstrike-codescan
     ports:
       - "${CODESCAN_PORT:-9001}:9000"
@@ -34,6 +35,8 @@ services:
       WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
       HEXSTRIKE_MAX_UPLOAD_MB: "${HEXSTRIKE_MAX_UPLOAD_MB:-300}"
       HEXSTRIKE_DEFAULT_FAIL_ON: "${HEXSTRIKE_DEFAULT_FAIL_ON:-high}"
+    volumes:
+      - codescan_reports:/opt/hexstrike-ai/hexstrike-reports
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
@@ -43,7 +46,7 @@ services:
       retries: 3
 
   hexstrike-pentest:
-    image: ${REGISTRY_IMAGE:?set REGISTRY_IMAGE}:postdeploy
+    image: ${REGISTRY_IMAGE:-zed378/hexstrike-ai}:postdeploy
     container_name: hexstrike-pentest
     ports:
       - "${PENTEST_PORT:-9000}:9000"
@@ -54,6 +57,8 @@ services:
       WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:?set WEBHOOK_TOKEN}"
       WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
       HEXSTRIKE_DEFAULT_FAIL_ON: "${HEXSTRIKE_DEFAULT_FAIL_ON:-high}"
+    volumes:
+      - pentest_reports:/opt/hexstrike-ai/hexstrike-reports
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
@@ -61,3 +66,7 @@ services:
       timeout: 5s
       start_period: 45s
       retries: 3
+
+volumes:
+  codescan_reports:
+  pentest_reports:

@@ -54,7 +54,12 @@ EXPOSE 8888 9000
 # Webhook auto-menyalakan server; endpoint /scan/code menerima upload arsip repo
 ENV HEXSTRIKE_AUTOSTART_SERVER=1 \
     HEXSTRIKE_SERVER=http://localhost:8888 \
-    WEBHOOK_PORT=9000
+    WEBHOOK_PORT=9000 \
+    HEXSTRIKE_REPORT_ROOT=/opt/hexstrike-ai/hexstrike-reports \
+    HEXSTRIKE_DB_PATH=/opt/hexstrike-ai/hexstrike-reports/hexstrike.db
+
+# Persistent volume: laporan + SQLite dashboard bertahan lintas restart/upgrade
+VOLUME ["/opt/hexstrike-ai/hexstrike-reports"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
     CMD curl -fsS http://localhost:9000/health || exit 1

@@ -111,6 +111,13 @@ proxy_set_header X-Forwarded-Proto $scheme;
 your GitLab runner egress IPs and denies the rest, then attach it to both hosts.
 This is defense-in-depth on top of `WEBHOOK_TOKEN`.
 
+> **Metric dashboard** is served on the same hosts:
+> `https://codescan.hexstrike.example.com/dashboard?token=<WEBHOOK_TOKEN>` and
+> `.../pentest.../dashboard?token=...` (per-report detail at `/dashboard/<run_id>`).
+> The `?token=` query keeps it browser-friendly; still restrict `/dashboard` and
+> `/api/*` at NPM (Access List or an admin-only host) — it exposes findings. If you
+> add an NPM Access List with **basic auth**, it composes fine with the token.
+
 ---
 
 ## 4. Point the CI pipeline at the public hostnames

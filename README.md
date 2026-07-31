@@ -271,7 +271,8 @@ Full guide is in [`INTEGRATIONS.md`](INTEGRATIONS.md); a step-by-step summary is
 | [`docker-compose.yml`](docker-compose.yml) | Runs the server + agent + webhook service |
 | [`hexstrike_openai_agent.py`](hexstrike_openai_agent.py) | Agent that drives the tools using a local OpenAI-compatible LLM (vLLM, etc.) |
 | [`hexstrike_ci.py`](hexstrike_ci.py) | CI/CD scanner: `code-scan` (pre-deploy) & `pentest` (post-deploy) with a severity gate |
-| [`hexstrike_webhook.py`](hexstrike_webhook.py) | Webhook to trigger a scan/pentest on demand (target + creds) |
+| [`hexstrike_webhook.py`](hexstrike_webhook.py) | Webhook to trigger a scan/pentest on demand (target + creds) + metric dashboard |
+| [`hexstrike_db.py`](hexstrike_db.py) | SQLite report store + metric dashboard renderer (`/dashboard`) |
 | [`.gitlab-ci.yml`](.gitlab-ci.yml) | Pipeline that builds + pushes 3 HexStrike images to a private registry |
 | [`ci/hexstrike-scan.gitlab-ci.yml`](ci/hexstrike-scan.gitlab-ci.yml) | `include:` template for your application pipeline (code_scan + pentest + linters) |
 | [`.env.example`](.env.example) | Example configuration for the LLM endpoint & server |
@@ -491,6 +492,11 @@ Set the masked CI/CD variable **`HEXSTRIKE_WEBHOOK_TOKEN`** = the VPS `WEBHOOK_T
 The `code_scan` job uploads a repo archive to `/scan/code`; the `pentest` job POSTs
 the deployed URL to `/trigger`; both poll `/status/<job_id>` and fail the pipeline
 when the service reports `gate_failed`. Full details in [`INTEGRATIONS.md`](INTEGRATIONS.md) §4.7.
+
+Every run is persisted to **SQLite** and shown on a **metric dashboard** at
+`GET /dashboard` (KPIs, findings-by-severity, trend, recent runs) with per-report
+detail at `/dashboard/<run_id>`. Protected by `?token=<WEBHOOK_TOKEN>`; data lives
+on a persistent volume. See [`INTEGRATIONS.md`](INTEGRATIONS.md) §4.8.
 
 > Put the VPS endpoints behind a **TLS reverse proxy** and restrict to your runner IPs.
 > Using **Nginx Proxy Manager** on a separate VM? Step-by-step guide (including the

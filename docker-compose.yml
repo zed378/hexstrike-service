@@ -1,6 +1,7 @@
 # ============================================================================
-# HexStrike AI — docker-compose
+# HexStrike AI — docker-compose (pull-only; image dari Docker Hub zed378/hexstrike-ai)
 #
+#   docker compose pull                            # tarik image terbaru dari registry
 #   docker compose up -d hexstrike-server          # jalankan Flask API + tools
 #   docker compose run --rm agent "Recon scanme.nmap.org"   # agent LLM lokal
 #   docker compose run --rm agent                  # agent mode interaktif (REPL)
@@ -11,10 +12,7 @@
 
 services:
   hexstrike-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ${REGISTRY_IMAGE:-hexstrike-ai}:${IMAGE_TAG:-latest}
+    image: ${REGISTRY_IMAGE:-zed378/hexstrike-ai}:${IMAGE_TAG:-latest}
     container_name: hexstrike-server
     ports:
       - "${HEXSTRIKE_PORT:-8888}:8888"
@@ -34,10 +32,7 @@ services:
   # Agent yang menyetir tools HexStrike memakai LLM lokal OpenAI-compatible.
   # Tidak ikut `up` biasa (pakai profile); dijalankan on-demand via `compose run`.
   agent:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ${REGISTRY_IMAGE:-hexstrike-ai}:${IMAGE_TAG:-latest}
+    image: ${REGISTRY_IMAGE:-zed378/hexstrike-ai}:${IMAGE_TAG:-latest}
     profiles: ["agent"]
     depends_on:
       hexstrike-server:
@@ -58,10 +53,7 @@ services:
   #   curl -F file=@repo.tgz -F fail_on=high -H "X-Webhook-Token: $WEBHOOK_TOKEN" \
   #        http://localhost:9001/scan/code
   code-scan-webhook:
-    build:
-      context: .
-      dockerfile: Dockerfile.predeploy
-    image: ${REGISTRY_IMAGE:-hexstrike-ai}:predeploy
+    image: ${REGISTRY_IMAGE:-zed378/hexstrike-ai}:predeploy
     profiles: ["webhook"]
     ports:
       - "${CODESCAN_WEBHOOK_PORT:-9001}:9000"
@@ -72,6 +64,8 @@ services:
       WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:-}"
       WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
       HEXSTRIKE_MAX_UPLOAD_MB: "${HEXSTRIKE_MAX_UPLOAD_MB:-300}"
+    volumes:
+      - codescan_reports:/opt/hexstrike-ai/hexstrike-reports
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
@@ -86,10 +80,7 @@ services:
   #        -H 'Content-Type: application/json' \
   #        -d '{"target":"https://staging.example","action":"pentest","profile":"quick"}'
   pentest-webhook:
-    build:
-      context: .
-      dockerfile: Dockerfile.postdeploy
-    image: ${REGISTRY_IMAGE:-hexstrike-ai}:postdeploy
+    image: ${REGISTRY_IMAGE:-zed378/hexstrike-ai}:postdeploy
     profiles: ["webhook"]
     ports:
       - "${WEBHOOK_PORT:-9000}:9000"
@@ -103,6 +94,8 @@ services:
       # WAJIB: set token rahasia (atau WEBHOOK_HMAC_SECRET) agar /trigger aktif.
       WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:-}"
       WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
+    volumes:
+      - pentest_reports:/opt/hexstrike-ai/hexstrike-reports
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
@@ -110,3 +103,7 @@ services:
       timeout: 5s
       start_period: 45s
       retries: 3
+
+volumes:
+  codescan_reports:
+  pentest_reports:
