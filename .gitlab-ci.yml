@@ -55,7 +55,7 @@ lint:dockerfile:
   script:
     - echo "🐳 Lint Dockerfile (hadolint)…"
     # DL3008 (pin apt versions) & SC lint di-relaks: daftar tool panjang & pakai || true by design.
-    - hadolint --ignore DL3008 --ignore DL3013 --ignore DL3018 --ignore DL4006 --ignore SC2015 Dockerfile
+    - hadolint --ignore DL3008 --ignore DL3013 --ignore DL3018 --ignore DL4006 --ignore SC2015 deploy/Dockerfile
   allow_failure: true
   rules:
     - when: always
@@ -67,7 +67,8 @@ check:dockerfile:
     - docker:27-dind
   script:
     - echo "🔎 docker build --check (validasi tanpa build penuh)…"
-    - docker build --check .
+    # Dockerfile ada di deploy/, context = ROOT repo (Dockerfile COPY app dari root)
+    - docker build --check -f deploy/Dockerfile .
   rules:
     - when: always
 
@@ -84,7 +85,7 @@ check:dockerfile:
     - *docker_login
   variables:
     # Di-override oleh matrix (full / predeploy / postdeploy)
-    DOCKERFILE: "Dockerfile"
+    DOCKERFILE: "deploy/Dockerfile"
     TAG_SUFFIX: ""
   script:
     - TAG="${PRIMARY_TAG}${TAG_SUFFIX}"
@@ -115,11 +116,11 @@ check:dockerfile:
 
 # Matriks 3 image: full (arsenal lengkap), predeploy (code-scan), postdeploy (pentest+webhook)
 .image_matrix: &image_matrix
-  - DOCKERFILE: "Dockerfile"
+  - DOCKERFILE: "deploy/Dockerfile"
     TAG_SUFFIX: ""
-  - DOCKERFILE: "Dockerfile.predeploy"
+  - DOCKERFILE: "deploy/Dockerfile.predeploy"
     TAG_SUFFIX: "-predeploy"
-  - DOCKERFILE: "Dockerfile.postdeploy"
+  - DOCKERFILE: "deploy/Dockerfile.postdeploy"
     TAG_SUFFIX: "-postdeploy"
 
 build:edge:
@@ -130,7 +131,7 @@ build:edge:
     PRIMARY_TAG: "$CI_COMMIT_SHORT_SHA"
     EXTRA_TAGS: "edge"
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
 
 build:release:
   extends: .build_template
@@ -140,4 +141,4 @@ build:release:
     PRIMARY_TAG: "$CI_COMMIT_TAG"
     EXTRA_TAGS: "latest"
   rules:
-    - if: '$CI_COMMIT_TAG'
+    - if: "$CI_COMMIT_TAG"

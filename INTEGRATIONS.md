@@ -77,9 +77,9 @@ python3 hexstrike_openai_agent.py
 
 **B. With docker-compose:**
 ```bash
-docker compose up -d hexstrike-server
-docker compose run --rm agent "Scan common ports on a-target-i-own.example"
-docker compose run --rm agent            # interactive mode
+docker compose -f deploy/docker-compose.yml up -d hexstrike-server
+docker compose -f deploy/docker-compose.yml run --rm agent "Scan common ports on a-target-i-own.example"
+docker compose -f deploy/docker-compose.yml run --rm agent            # interactive mode
 ```
 > vLLM is assumed to run outside this compose (e.g. on a GPU host). From a
 > container, the host is reachable via `host.docker.internal` (already mapped in compose).
@@ -108,8 +108,8 @@ File: [`.gitlab-ci.yml`](.gitlab-ci.yml)
 | Push to default branch | build + smoke test + push 3 images `:<sha>` & `:edge` (full, `-predeploy`, `-postdeploy`) |
 | Push a git tag (e.g. `v6.0.1`) | build + smoke test + push 3 images `:<tag>` & `:latest` (full, `-predeploy`, `-postdeploy`) |
 
-The three images are built in parallel (`parallel:matrix`): **full** (`Dockerfile`),
-**pre-deploy** (`Dockerfile.predeploy`), **post-deploy** (`Dockerfile.postdeploy`).
+The three images are built in parallel (`parallel:matrix`): **full** (`deploy/Dockerfile`),
+**pre-deploy** (`deploy/Dockerfile.predeploy`), **post-deploy** (`deploy/Dockerfile.postdeploy`).
 Builds do **not** run on MRs to keep pipelines fast; only lightweight validation.
 
 ### 3.2 CI/CD Variables to set
@@ -195,7 +195,7 @@ pipeline (e.g. called by your CD system after a deploy) with a target + creds:
 
 ```bash
 export WEBHOOK_TOKEN=$(openssl rand -hex 16)
-docker compose --profile webhook up -d pentest-webhook
+docker compose -f deploy/docker-compose.yml --profile webhook up -d pentest-webhook
 
 curl -X POST http://localhost:9000/trigger \
   -H "X-Webhook-Token: $WEBHOOK_TOKEN" -H "Content-Type: application/json" \
@@ -399,7 +399,12 @@ the Dockerfiles/compose that run them stay unchanged.
 | | `mcp/client.py` | REST client for the MCP bridge |
 | | `mcp/server.py` | assembles FastMCP + registers tool categories + `main` (thin) |
 | | `mcp/tools/<cat>.py` | per-category `@mcp.tool` registrations via `register(mcp, client)` — 14 modules (network, cloud, web, binary, api, ctf, recon, intelligence, visual, process, monitoring, python_env, files_payloads, additional) |
-| server subsystems | `server/visual.py` | `ModernVisualEngine` (banners/visual output) |
+| server subsystems | `server/models.py` | data models — enums & dataclasses (TargetProfile, AttackChain, ErrorContext, …) |
+| | `server/decision_engine.py` | `IntelligentDecisionEngine` (tool selection & parameter optimization) |
+| | `server/errors.py` | `IntelligentErrorHandler` + `GracefulDegradation` (error handling & recovery) |
+| | `server/analyzers.py` | TechnologyDetector, RateLimitDetector, FailureRecoverySystem, PerformanceMonitor, ParameterOptimizer |
+| | `server/bugbounty.py` | BugBountyTarget, BugBountyWorkflowManager, FileUploadTestingFramework |
+| | `server/visual.py` | `ModernVisualEngine` (banners/visual output) |
 | | `server/ctf.py` | CTF workflow / tooling / automation / team managers |
 | | `server/cve_intel.py` | `CVEIntelligenceManager` (CVE & exploit intel) |
 
@@ -407,8 +412,13 @@ Guiding rule: each file has one reason to change. E.g. adjusting the trivy parse
 touches only `parsers.py`; changing the dashboard look touches only `dashboard.py`;
 adding an MCP tool touches only the relevant `mcp/tools/<category>.py`.
 
-> `hexstrike_server.py` (the upstream Flask server) has been **partially slimmed**:
-> the self-contained `ModernVisualEngine`, the CTF managers, and `CVEIntelligenceManager`
-> were extracted to `hexstrike_lib/server/` (≈2.6k lines, 17.3k → 14.7k). The Flask app,
-> the 156 REST tool endpoints, and the tightly-coupled engine classes remain in place —
-> extracting those would risk circular imports for little gain.
+> `hexstrike_server.py` (the upstream Flask server) has been **incrementally slimmed**:
+> 8 self-contained subsystems were extracted to `hexstrike_lib/server/`
+> (≈5.6k lines, **17.3k → 11.7k**). Every extraction is validated by importing the server
+> (all 157 routes register, singletons construct) and by running the predeploy/postdeploy
+> images end-to-end. What **stays** in `hexstrike_server.py`: the Flask app, the 156 REST
+> tool endpoints, and the core execution cluster — `execute_command` + `EnhancedCommandExecutor`
+> + the process/cache/telemetry singletons. That cluster is (a) tightly interwoven with
+> module-level singletons/config and (b) contains exploit-payload string templates that
+> antivirus flags as backdoors when isolated into a small file. Splitting it further needs
+> a dedicated refactor with full integration testing, so it is intentionally left in place.

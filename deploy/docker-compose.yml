@@ -1,13 +1,14 @@
 # ============================================================================
 # HexStrike AI — docker-compose (pull-only; image dari Docker Hub zed378/hexstrike-ai)
 #
-#   docker compose pull                            # tarik image terbaru dari registry
-#   docker compose up -d hexstrike-server          # jalankan Flask API + tools
-#   docker compose run --rm agent "Recon scanme.nmap.org"   # agent LLM lokal
-#   docker compose run --rm agent                  # agent mode interaktif (REPL)
+# JALANKAN DARI ROOT REPO (file ini ada di deploy/). Contoh:
+#   docker compose --env-file .env -f deploy/docker-compose.yml pull
+#   docker compose --env-file .env -f deploy/docker-compose.yml up -d hexstrike-server
+#   docker compose --env-file .env -f deploy/docker-compose.yml run --rm agent "Recon scanme.nmap.org"
+# Atau lebih ringkas lewat script:  scripts/build-deploy.sh up   (make -C scripts up)
 #
 # LLM lokal (vLLM) diasumsikan berjalan DI LUAR compose ini (mis. di GPU host).
-# Atur endpoint-nya lewat file .env (lihat .env.example).
+# Atur endpoint-nya lewat file .env di root repo (lihat .env.example).
 # ============================================================================
 
 services:
@@ -38,7 +39,7 @@ services:
       hexstrike-server:
         condition: service_healthy
     env_file:
-      - .env
+      - ../.env
     environment:
       HEXSTRIKE_SERVER: ${HEXSTRIKE_SERVER:-http://hexstrike-server:8888}
     # Agar OPENAI_BASE_URL=host.docker.internal berfungsi juga di Linux.

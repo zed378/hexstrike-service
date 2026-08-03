@@ -264,11 +264,13 @@ Full guide is in [`INTEGRATIONS.md`](INTEGRATIONS.md); a step-by-step summary is
 
 | File | Purpose |
 |------|---------|
-| [`Dockerfile`](Dockerfile) | FULL image: the entire arsenal (150+ tools) + `hexstrike_server.py` (for the LLM agent) |
-| [`Dockerfile.predeploy`](Dockerfile.predeploy) | Lightweight PRE-DEPLOY image: trivy/checkov/semgrep/gitleaks (code-scan) |
-| [`Dockerfile.postdeploy`](Dockerfile.postdeploy) | POST-DEPLOY image: nuclei/httpx/nikto/wafw00f + webhook (pentest) |
+| [`deploy/Dockerfile`](deploy/Dockerfile) | FULL image: the entire arsenal (150+ tools) + `hexstrike_server.py` (for the LLM agent) |
+| [`deploy/Dockerfile.predeploy`](deploy/Dockerfile.predeploy) | Lightweight PRE-DEPLOY image: trivy/checkov/semgrep/gitleaks (code-scan) |
+| [`deploy/Dockerfile.postdeploy`](deploy/Dockerfile.postdeploy) | POST-DEPLOY image: nuclei/httpx/nikto/wafw00f + webhook (pentest) |
 | [`requirements-scan.txt`](requirements-scan.txt) | Minimal shared dependencies for the pre/post-deploy images |
-| [`docker-compose.yml`](docker-compose.yml) | Runs the server + agent + webhook service |
+| [`deploy/docker-compose.yml`](deploy/docker-compose.yml) | Runs the server + agent + webhook service |
+| [`deploy/docker-compose.vps.yml`](deploy/docker-compose.vps.yml) | VPS deployment: code-scan + pentest endpoint services |
+| [`scripts/`](scripts/) | Build & deploy helpers: `Makefile`, `build-deploy.sh` / `.bat` / `.ps1` |
 | [`hexstrike_openai_agent.py`](hexstrike_openai_agent.py) | Agent that drives the tools using a local OpenAI-compatible LLM (vLLM, etc.) |
 | [`hexstrike_ci.py`](hexstrike_ci.py) | CI/CD scanner: `code-scan` (pre-deploy) & `pentest` (post-deploy) with a severity gate |
 | [`hexstrike_webhook.py`](hexstrike_webhook.py) | Webhook to trigger a scan/pentest on demand (target + creds) + metric dashboard |
@@ -285,18 +287,29 @@ There are **three** purpose-built images:
 
 | Image | Dockerfile | Contents | Size |
 |-------|-----------|----------|------|
-| full | [`Dockerfile`](Dockerfile) | the entire arsenal (for the LLM agent & general use) | ~15-25 GB |
-| pre-deploy | [`Dockerfile.predeploy`](Dockerfile.predeploy) | trivy/checkov/semgrep/gitleaks (code-scan) | small, cloud-CI friendly |
-| post-deploy | [`Dockerfile.postdeploy`](Dockerfile.postdeploy) | nuclei/httpx/nikto/wafw00f + webhook (pentest) | medium |
+| full | [`deploy/Dockerfile`](deploy/Dockerfile) | the entire arsenal (for the LLM agent & general use) | ~15-25 GB |
+| pre-deploy | [`deploy/Dockerfile.predeploy`](deploy/Dockerfile.predeploy) | trivy/checkov/semgrep/gitleaks (code-scan) | small, cloud-CI friendly |
+| post-deploy | [`deploy/Dockerfile.postdeploy`](deploy/Dockerfile.postdeploy) | nuclei/httpx/nikto/wafw00f + webhook (pentest) | medium |
+
+Dockerfiles & compose live in [`deploy/`](deploy/); the build **context is the repo
+root** (the Dockerfiles copy the app from there). Easiest via the helper scripts in
+[`scripts/`](scripts/) (pick your platform):
 
 ```bash
-# Build whichever you need:
-docker build -t hexstrike-ai:latest .                                   # full
-docker build -f Dockerfile.predeploy  -t hexstrike-ai:predeploy  .      # pre-deploy
-docker build -f Dockerfile.postdeploy -t hexstrike-ai:postdeploy .      # post-deploy
+# Helper scripts (build all 3, or one: latest|predeploy|postdeploy)
+scripts/build-deploy.sh build predeploy         # bash / git-bash / macOS / Linux
+make -C scripts build-predeploy                  # Makefile
+scripts\build-deploy.bat build predeploy         # Windows CMD
+pwsh scripts/build-deploy.ps1 build predeploy    # PowerShell
+# other commands: push | pull | up | down | logs | vps-up | vps-down | clean
+
+# Or raw docker (run from repo root; note -f deploy/... and context ".")
+docker build -f deploy/Dockerfile            -t hexstrike-ai:latest     .   # full
+docker build -f deploy/Dockerfile.predeploy  -t hexstrike-ai:predeploy  .   # pre-deploy
+docker build -f deploy/Dockerfile.postdeploy -t hexstrike-ai:postdeploy .   # post-deploy
 
 # Run the full server (port 8888) & verify
-docker compose up -d hexstrike-server
+docker compose -f deploy/docker-compose.yml up -d hexstrike-server
 curl http://localhost:8888/health
 ```
 
@@ -330,9 +343,9 @@ export OPENAI_MODEL=Qwen/Qwen2.5-7B-Instruct
 python3 hexstrike_openai_agent.py "Light recon on scanme.nmap.org"
 
 # 3b. Or via docker-compose
-docker compose up -d hexstrike-server
-docker compose run --rm agent "Scan common ports on a-target-i-own.example"
-docker compose run --rm agent                       # interactive mode (REPL)
+docker compose -f deploy/docker-compose.yml up -d hexstrike-server
+docker compose -f deploy/docker-compose.yml run --rm agent "Scan common ports on a-target-i-own.example"
+docker compose -f deploy/docker-compose.yml run --rm agent                       # interactive mode (REPL)
 ```
 
 > Use a model that supports tool/function-calling (Qwen2.5-Instruct,
@@ -412,7 +425,7 @@ system after a deploy.
 ```bash
 # 1. Start the webhook service (requires a secret token)
 export WEBHOOK_TOKEN=$(openssl rand -hex 16)
-docker compose --profile webhook up -d pentest-webhook
+docker compose -f deploy/docker-compose.yml --profile webhook up -d pentest-webhook
 #   (or: docker run -e WEBHOOK_TOKEN -p 9000:9000 hexstrike-ai:postdeploy)
 
 # 2. Trigger a pentest against the target
