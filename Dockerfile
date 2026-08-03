@@ -207,6 +207,9 @@ RUN set -e; \
 
 # ---------------------------------------------------------------------------
 # 10) Copy source code aplikasi
+#     Termasuk paket hexstrike_lib/ (modul single-responsibility) + entrypoint
+#     tipis: hexstrike_server.py, hexstrike_mcp.py, hexstrike_ci.py,
+#     hexstrike_webhook.py, hexstrike_openai_agent.py
 # ---------------------------------------------------------------------------
 COPY . .
 

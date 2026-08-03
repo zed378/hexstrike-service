@@ -54,7 +54,8 @@ RUN pip install --upgrade pip \
     && pip install -r requirements-scan.txt \
     && pip install "wafw00f"
 
-# Source code (server + hexstrike_ci.py + hexstrike_webhook.py)
+# Source code: paket hexstrike_lib/ (modul CI-scan, webhook, db, dashboard) +
+# entrypoint tipis (hexstrike_server.py, hexstrike_ci.py, hexstrike_webhook.py)
 COPY . .
 
 # 8888 = Flask HexStrike API, 9000 = webhook trigger

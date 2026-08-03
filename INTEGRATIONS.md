@@ -351,3 +351,64 @@ language linters (the `lint_*` jobs) for pure *code quality*.
   from the build context and via `.gitignore`.
 - Set `WEBHOOK_TOKEN` (or `WEBHOOK_HMAC_SECRET`) for the webhook; without it,
   `/trigger` refuses all requests.
+
+---
+
+## 6. Code structure — `hexstrike_lib/` package
+
+The integration layer is organized as small single-responsibility modules under
+`hexstrike_lib/`. The top-level scripts are **thin entrypoints** (≤ 20 lines) so
+the Dockerfiles/compose that run them stay unchanged.
+
+**Entrypoints (repo root):**
+
+| Script | Delegates to |
+|--------|--------------|
+| `hexstrike_ci.py` | `hexstrike_lib.cli:main` |
+| `hexstrike_webhook.py` | `hexstrike_lib.webhook_app:main` |
+| `hexstrike_openai_agent.py` | `hexstrike_lib.agent:main` |
+| `hexstrike_mcp.py` | `hexstrike_lib.mcp.server:main` |
+| `hexstrike_db.py` | compat shim → `hexstrike_lib.db` + `hexstrike_lib.dashboard` |
+| `hexstrike_server.py` | unchanged upstream monolith (not refactored) |
+
+**Modules (`hexstrike_lib/`):**
+
+| Area | Module | Responsibility |
+|------|--------|----------------|
+| shared | `severity.py` | severity order, ranking, colors (single source) |
+| | `config.py` | env-based configuration |
+| | `logging_util.py` | log helper |
+| CI scanner | `client.py` | HexStrike REST client |
+| | `findings.py` | finding model + severity counts |
+| | `parsers.py` | trivy/checkov/nuclei output parsers |
+| | `local_tools.py` | semgrep/gitleaks local CLI runners |
+| | `ai_summary.py` | optional LLM triage summary |
+| | `reporting.py` | write JSON/MD reports + gating |
+| | `scanners.py` | code_scan & pentest orchestration |
+| | `cli.py` | CI command-line interface |
+| storage/UI | `db.py` | SQLite report store |
+| | `dashboard.py` | HTML dashboard renderer |
+| webhook | `auth.py` | request/view authorization (token/HMAC) |
+| | `auth_headers.py` | build auth headers for authenticated scans |
+| | `archive.py` | safe archive extraction (upload) |
+| | `jobs.py` | `JobManager` background job runner |
+| | `server_control.py` | autostart hexstrike_server |
+| | `webhook_app.py` | Flask app factory + routes + main |
+| agent | `agent.py` | OpenAI-compatible (vLLM) agent via MCP |
+| MCP bridge | `mcp/colors.py` | color palette + colored logging formatter |
+| | `mcp/client.py` | REST client for the MCP bridge |
+| | `mcp/server.py` | assembles FastMCP + registers tool categories + `main` (thin) |
+| | `mcp/tools/<cat>.py` | per-category `@mcp.tool` registrations via `register(mcp, client)` — 14 modules (network, cloud, web, binary, api, ctf, recon, intelligence, visual, process, monitoring, python_env, files_payloads, additional) |
+| server subsystems | `server/visual.py` | `ModernVisualEngine` (banners/visual output) |
+| | `server/ctf.py` | CTF workflow / tooling / automation / team managers |
+| | `server/cve_intel.py` | `CVEIntelligenceManager` (CVE & exploit intel) |
+
+Guiding rule: each file has one reason to change. E.g. adjusting the trivy parser
+touches only `parsers.py`; changing the dashboard look touches only `dashboard.py`;
+adding an MCP tool touches only the relevant `mcp/tools/<category>.py`.
+
+> `hexstrike_server.py` (the upstream Flask server) has been **partially slimmed**:
+> the self-contained `ModernVisualEngine`, the CTF managers, and `CVEIntelligenceManager`
+> were extracted to `hexstrike_lib/server/` (≈2.6k lines, 17.3k → 14.7k). The Flask app,
+> the 156 REST tool endpoints, and the tightly-coupled engine classes remain in place —
+> extracting those would risk circular imports for little gain.
