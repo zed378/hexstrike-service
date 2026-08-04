@@ -988,3 +988,8 @@ class IntelligentDecisionEngine:
         return chain
 
 # Global decision engine instance
+
+
+# --- module-owned singleton (dipakai method internal optimize_parameters) ---
+from .analyzers import ParameterOptimizer  # noqa: E402
+parameter_optimizer = ParameterOptimizer()

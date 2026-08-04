@@ -399,26 +399,38 @@ the Dockerfiles/compose that run them stay unchanged.
 | | `mcp/client.py` | REST client for the MCP bridge |
 | | `mcp/server.py` | assembles FastMCP + registers tool categories + `main` (thin) |
 | | `mcp/tools/<cat>.py` | per-category `@mcp.tool` registrations via `register(mcp, client)` — 14 modules (network, cloud, web, binary, api, ctf, recon, intelligence, visual, process, monitoring, python_env, files_payloads, additional) |
-| server subsystems | `server/models.py` | data models — enums & dataclasses (TargetProfile, AttackChain, ErrorContext, …) |
-| | `server/decision_engine.py` | `IntelligentDecisionEngine` (tool selection & parameter optimization) |
-| | `server/errors.py` | `IntelligentErrorHandler` + `GracefulDegradation` (error handling & recovery) |
+| server: runtime | `server/execution.py` | `execute_command`(+recovery) + `EnhancedCommandExecutor` + process/cache/telemetry infra + runtime singletons (cache, telemetry, error_handler, …) — the "unlock" that breaks circular imports |
+| | `server/context.py` | registry of non-execution singletons (decision_engine, cve_intelligence, exploit_generator, …) |
+| | `server/deps.py` | shared namespace for blueprints (`from ...deps import *`) — re-exports singletons, classes, execute_command, Flask utils |
+| | `server/scan_helpers.py` | `execute_*_scan` helpers used by smart-scan |
+| server: subsystems | `server/models.py` | data models — enums & dataclasses |
+| | `server/decision_engine.py` | `IntelligentDecisionEngine` |
+| | `server/errors.py` | `IntelligentErrorHandler` + `GracefulDegradation` |
 | | `server/analyzers.py` | TechnologyDetector, RateLimitDetector, FailureRecoverySystem, PerformanceMonitor, ParameterOptimizer |
 | | `server/bugbounty.py` | BugBountyTarget, BugBountyWorkflowManager, FileUploadTestingFramework |
-| | `server/visual.py` | `ModernVisualEngine` (banners/visual output) |
+| | `server/visual.py` | `ModernVisualEngine` |
 | | `server/ctf.py` | CTF workflow / tooling / automation / team managers |
-| | `server/cve_intel.py` | `CVEIntelligenceManager` (CVE & exploit intel) |
+| | `server/cve_intel.py` | `CVEIntelligenceManager` |
+| | `server/correlator.py` | `VulnerabilityCorrelator` |
+| | `server/file_ops.py` | `FileOperationsManager` |
+| | `server/http_framework.py` | `HTTPTestingFramework` |
+| | `server/browser_agent.py` | `BrowserAgent` (Selenium) |
+| | `server/exploits.py` | `AIExploitGenerator` (AV-gated payload templates) |
+| | `server/payload_generator.py` | `AIPayloadGenerator` (AV-gated) |
+| server: routes | `server/routes/{core,tools1,tools2,tools3,misc}.py` | 156 REST endpoints split into 5 Flask Blueprints |
+| | `server/routes/__init__.py` | `register_all(app)` — registers every blueprint |
 
 Guiding rule: each file has one reason to change. E.g. adjusting the trivy parser
 touches only `parsers.py`; changing the dashboard look touches only `dashboard.py`;
-adding an MCP tool touches only the relevant `mcp/tools/<category>.py`.
+adding an MCP tool touches only the relevant `mcp/tools/<category>.py`; adding a REST
+endpoint touches only the relevant `server/routes/*.py`.
 
-> `hexstrike_server.py` (the upstream Flask server) has been **incrementally slimmed**:
-> 8 self-contained subsystems were extracted to `hexstrike_lib/server/`
-> (≈5.6k lines, **17.3k → 11.7k**). Every extraction is validated by importing the server
-> (all 157 routes register, singletons construct) and by running the predeploy/postdeploy
-> images end-to-end. What **stays** in `hexstrike_server.py`: the Flask app, the 156 REST
-> tool endpoints, and the core execution cluster — `execute_command` + `EnhancedCommandExecutor`
-> + the process/cache/telemetry singletons. That cluster is (a) tightly interwoven with
-> module-level singletons/config and (b) contains exploit-payload string templates that
-> antivirus flags as backdoors when isolated into a small file. Splitting it further needs
-> a dedicated refactor with full integration testing, so it is intentionally left in place.
+> `hexstrike_server.py` (the upstream Flask server) has been **fully modularized**:
+> the ~17.3k-line monolith is now an **83-line bootstrap** (create app → import subsystems →
+> `routes.register_all(app)` → `main()`). All 156 REST endpoints live in 5 Blueprints under
+> `server/routes/`, the `execute_command` execution core in `server/execution.py`, singletons
+> in `server/context.py`, and every class in its own `server/*.py`. The AV-sensitive exploit/
+> payload templates (`exploits.py`, `payload_generator.py`) require a Windows Defender folder
+> exclusion to sit in isolated files. Validation for every stage: import the server (all 156
+> routes register, all singletons construct), a broad runtime smoke across all 5 blueprints
+> (0 NameErrors), and end-to-end predeploy/postdeploy image runs (server healthy, scan completes).

@@ -1449,3 +1449,10 @@ class CTFTeamCoordinator:
 # ADVANCED PARAMETER OPTIMIZATION AND INTELLIGENCE (v9.0 ENHANCEMENT)
 # ============================================================================
 
+
+
+# --- module-owned singleton (dipakai CTFChallengeAutomator internal) ---
+ctf_manager = CTFWorkflowManager()
+ctf_tools = CTFToolManager()
+ctf_automator = CTFChallengeAutomator()
+ctf_coordinator = CTFTeamCoordinator()
