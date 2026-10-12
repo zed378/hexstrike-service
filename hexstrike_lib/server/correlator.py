@@ -18,6 +18,18 @@ from .visual import ModernVisualEngine  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _cvss2_severity(score: float) -> str:
+    """CVSS v2 tak selalu membawa baseSeverity di response NVD (field itu baru
+    konsisten sejak v3) — fallback ke mapping skor standar NVD utk v2."""
+    if score >= 7.0:
+        return "HIGH"
+    if score >= 4.0:
+        return "MEDIUM"
+    if score > 0:
+        return "LOW"
+    return ""
+
+
 class VulnerabilityCorrelator:
     """Correlate vulnerabilities for multi-stage attack chain discovery.
 
@@ -152,9 +164,12 @@ class VulnerabilityCorrelator:
                     cvss_score, severity = 0.0, "UNKNOWN"
                     for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
                         if metrics.get(key):
-                            data = metrics[key][0]["cvssData"]
-                            cvss_score = data.get("baseScore", 0.0)
-                            severity = data.get("baseSeverity", severity)
+                            entry = metrics[key][0]
+                            cvss_score = entry["cvssData"].get("baseScore", 0.0)
+                            # v3.x: baseSeverity ada di dalam cvssData. v2: baseSeverity
+                            # adalah sibling dari cvssData (bukan di dalamnya) di skema NVD.
+                            severity = entry["cvssData"].get("baseSeverity") or entry.get("baseSeverity") \
+                                or _cvss2_severity(cvss_score) or severity
                             break
                     descriptions = cve.get("descriptions", [])
                     description = next((d.get("value", "") for d in descriptions if d.get("lang") == "en"), "")

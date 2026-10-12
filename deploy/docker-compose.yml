@@ -22,6 +22,10 @@ services:
     cap_add:
       - NET_RAW
       - NET_ADMIN
+    environment:
+      # WAJIB diisi di luar dev lokal terisolasi — endpoint ini bisa eksekusi
+      # command (/api/command dkk). Kosong = API terbuka tanpa kredensial.
+      HEXSTRIKE_API_KEY: "${HEXSTRIKE_API_KEY:-}"
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8888/health"]
@@ -61,6 +65,7 @@ services:
     environment:
       HEXSTRIKE_AUTOSTART_SERVER: "1"
       HEXSTRIKE_SERVER: "http://localhost:8888"
+      HEXSTRIKE_API_KEY: "${HEXSTRIKE_API_KEY:-}"
       WEBHOOK_PORT: "9000"
       WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:-}"
       WEBHOOK_HMAC_SECRET: "${WEBHOOK_HMAC_SECRET:-}"
@@ -91,6 +96,7 @@ services:
     environment:
       HEXSTRIKE_AUTOSTART_SERVER: "1"
       HEXSTRIKE_SERVER: "http://localhost:8888"
+      HEXSTRIKE_API_KEY: "${HEXSTRIKE_API_KEY:-}"
       WEBHOOK_PORT: "9000"
       # WAJIB: set token rahasia (atau WEBHOOK_HMAC_SECRET) agar /trigger aktif.
       WEBHOOK_TOKEN: "${WEBHOOK_TOKEN:-}"

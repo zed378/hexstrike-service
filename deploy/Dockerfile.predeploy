@@ -32,10 +32,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
         | sh -s -- -b /usr/local/bin
 
-# gitleaks (release tarball)
+# gitleaks (release tarball) — SELALU versi terbaru dari GitHub. `test -n`
+# memastikan build gagal keras bila lookup "latest" gagal (mis. rate-limit API
+# GitHub unauthenticated, 60/jam) daripada diam-diam lanjut tanpa gitleaks.
 RUN GL_VER="$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name | sed 's/^v//')" \
+    && test -n "$GL_VER" && test "$GL_VER" != "null" \
     && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" \
-        | tar -C /usr/local/bin -xz gitleaks
+        | tar -C /usr/local/bin -xz gitleaks \
+    && gitleaks version
 
 WORKDIR /opt/hexstrike-ai
 

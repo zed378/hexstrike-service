@@ -133,9 +133,21 @@ RUN gem install one_gadget --no-document || echo "WARN: gem install one_gadget f
 
 # ---------------------------------------------------------------------------
 # 6) Python virtualenv + requirements HexStrike (framework)
+#
+# PENTING: venv ini DIKUNCI ke Python 3.12 lewat uv, BUKAN `python3` sistem.
+# Kali Rolling mengikuti Debian unstable dan Python sistemnya sudah lompat ke
+# 3.14 — angr/pyvex (C-extension yg di-generate via cffi+pycparser saat build)
+# belum compatible dengan toolchain Python 3.14 saat tulisan ini dibuat (gagal
+# di langkah `make_ffi.py` dgn `pycparser.c_parser.ParseError: Unmatched '}'`).
+# uv dipakai karena cuma download Python standalone prebuilt (tak compile dari
+# source) sehingga tetap ringan & cepat, dan independen dari versi python3
+# bawaan OS yang akan terus bergerak maju tiap Kali Rolling update.
 # ---------------------------------------------------------------------------
 WORKDIR /opt/hexstrike-ai
-RUN python3 -m venv "$VIRTUAL_ENV" \
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && uv python install 3.12 \
+    && uv venv --python 3.12 --seed "$VIRTUAL_ENV" \
     && pip install --upgrade pip setuptools wheel
 
 # Copy requirements dulu supaya layer ini ke-cache saat kode berubah
@@ -187,10 +199,18 @@ RUN TS_VER="$(curl -fsSL https://api.github.com/repos/tenable/terrascan/releases
     && curl -fsSL "https://github.com/tenable/terrascan/releases/download/v${TS_VER}/terrascan_${TS_VER}_Linux_x86_64.tar.gz" \
         | tar -C /usr/local/bin -xz terrascan || echo "WARN: terrascan install failed"
 
-# gitleaks (secret scanning untuk stage code-scan CI/CD)
+# gitleaks (secret scanning untuk stage code-scan CI/CD) — SELALU pakai versi
+# terbaru dari GitHub (bukan di-pin), sesuai permintaan. Beda dengan sebelumnya:
+# kegagalan lookup/download SEKARANG membuat build gagal keras (tidak ditelan
+# `|| echo WARN` lagi) + verifikasi `gitleaks version` — supaya kalau rate-limit
+# GitHub API (60 req/jam unauthenticated, ikut terpakai oleh kube-bench/terrascan
+# di atas) bikin lookup gagal, itu KETAHUAN saat build, bukan diam-diam hilang
+# dari image lalu baru ketahuan pas code-scan jalan tanpa secret scanning.
 RUN GL_VER="$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name | sed 's/^v//')" \
+    && test -n "$GL_VER" && test "$GL_VER" != "null" \
     && curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" \
-        | tar -C /usr/local/bin -xz gitleaks || echo "WARN: gitleaks install failed"
+        | tar -C /usr/local/bin -xz gitleaks \
+    && gitleaks version
 
 # ---------------------------------------------------------------------------
 # 9) Symlink alias supaya nama biner cocok dengan yang di-probe /health
