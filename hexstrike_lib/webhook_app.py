@@ -14,6 +14,7 @@ Endpoint:
 import os
 import re
 import shutil
+from typing import Optional
 
 import requests
 from flask import Flask, Response, jsonify, request
@@ -30,6 +31,16 @@ log = make_log("webhook")
 
 # Target aman: scheme opsional, host domain/IP, port, path sederhana. Tolak char shell.
 TARGET_RE = re.compile(r"^(?:https?://)?[A-Za-z0-9._\-]+(?::\d{1,5})?(?:/[A-Za-z0-9._~:/%?#\[\]@!$&'()*+,;=\-]*)?$")
+
+
+def _resolve_baseline(name: Optional[str]) -> Optional[str]:
+    """Resolve nama file baseline terhadap BASELINE_DIR saja (anti path-traversal) —
+    baseline dikurasi operator di server, bukan konten bebas dari request."""
+    if not name:
+        return None
+    safe_name = os.path.basename(str(name))
+    path = os.path.join(config.BASELINE_DIR, safe_name)
+    return path if os.path.isfile(path) else None
 
 
 def create_app() -> Flask:
@@ -74,9 +85,14 @@ def create_app() -> Flask:
             return jsonify({"error": "target (domain/IP/URL) wajib & harus valid tanpa karakter shell"}), 400
 
         auth_headers = build_auth_headers(body.get("auth"))
+        baseline_path = _resolve_baseline(body.get("baseline"))
+        if body.get("baseline") and not baseline_path:
+            return jsonify({"error": "baseline tidak ditemukan di HEXSTRIKE_BASELINE_DIR"}), 400
         params = {
             "target": target, "action": action, "profile": profile, "fail_on": fail_on,
             "path": body.get("path", "."), "use_llm": bool(body.get("use_llm", False)),
+            "baseline_path": baseline_path, "diff_against_last": bool(body.get("diff_against_last", False)),
+            "image": (body.get("image") or "").strip() or None,
         }
         meta = {"action": action, "target": target, "profile": profile,
                 "fail_on": fail_on, "authenticated": bool(auth_headers)}
@@ -95,6 +111,11 @@ def create_app() -> Flask:
         if fail_on not in config.VALID_FAIL_ON:
             return jsonify({"error": "fail_on invalid"}), 400
         use_llm = str(request.form.get("use_llm", "false")).lower() in {"1", "true", "yes"}
+        diff_against_last = str(request.form.get("diff_against_last", "false")).lower() in {"1", "true", "yes"}
+        baseline_path = _resolve_baseline(request.form.get("baseline"))
+        if request.form.get("baseline") and not baseline_path:
+            return jsonify({"error": "baseline tidak ditemukan di HEXSTRIKE_BASELINE_DIR"}), 400
+        image = (request.form.get("image") or "").strip() or None
 
         # Simpan & ekstrak upload ke dir sementara (job_id sementara utk penamaan)
         import uuid
@@ -118,6 +139,7 @@ def create_app() -> Flask:
         params = {
             "target": archive_name, "action": "code-scan", "profile": "quick",
             "fail_on": fail_on, "path": src_dir, "cleanup_path": src_dir, "use_llm": use_llm,
+            "baseline_path": baseline_path, "diff_against_last": diff_against_last, "image": image,
         }
         meta = {"action": "code-scan", "target": archive_name, "fail_on": fail_on}
         job_id = jobs.submit(meta, params, [])

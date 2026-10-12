@@ -32,13 +32,26 @@ def render_dashboard(db_path: str = DEFAULT_DB, token: Optional[str] = None) -> 
 
     sev_bars = "".join(_bar(s, sev[s], sev_max, SEV_COLOR[s]) for s in SEVERITIES)
 
-    day_max = max((d["runs"] for d in m["by_day"]), default=1) or 1
+    # Trend findings per severity (stacked, bukan cuma jumlah run) — 14 hari terakhir.
+    day_total_max = max(
+        (d["critical"] + d["high"] + d["medium"] + d["low_info"] for d in m["by_day"]), default=1
+    ) or 1
     day_bars = ""
     for d in m["by_day"]:
-        h = int(90 * d["runs"] / day_max)
+        segs = [
+            ("critical", d["critical"], SEV_COLOR["critical"]),
+            ("high", d["high"], SEV_COLOR["high"]),
+            ("medium", d["medium"], SEV_COLOR["medium"]),
+            ("low+info", d["low_info"], SEV_COLOR["info"]),
+        ]
+        stack = ""
+        for label, val, color in segs:
+            if val <= 0:
+                continue
+            h = max(1, int(90 * val / day_total_max))
+            stack += f'<span class="seg" style="height:{h}px;background:{color}" title="{label}: {val}"></span>'
         day_bars += (
-            f'<div class="day"><span class="day-bar" style="height:{h}px" '
-            f'title="{d["runs"]} runs, {d["crit_high"]} crit+high"></span>'
+            f'<div class="day"><span class="day-bar" title="{d["runs"]} runs">{stack}</span>'
             f'<span class="day-lbl">{html.escape(d["day"][5:])}</span></div>'
         )
 
@@ -95,8 +108,12 @@ h1{{font-size:20px;margin:0 0 4px}} .sub{{color:var(--muted);margin-bottom:20px}
 .bar-fill{{display:block;height:100%}} .bar-val{{width:44px;text-align:right;font-variant-numeric:tabular-nums}}
 .days{{display:flex;align-items:flex-end;gap:6px;height:110px}}
 .day{{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px}}
-.day-bar{{width:100%;background:#3aa0ff;border-radius:3px 3px 0 0;min-height:2px}}
+.day-bar{{width:100%;display:flex;flex-direction:column-reverse;border-radius:3px 3px 0 0;overflow:hidden;min-height:2px;background:#0b0f14}}
+.day-bar .seg{{width:100%;display:block}}
 .day-lbl{{font-size:10px;color:var(--muted)}}
+.legend{{display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--muted)}}
+.legend span{{display:inline-flex;align-items:center;gap:5px}}
+.legend i{{width:9px;height:9px;border-radius:2px;display:inline-block}}
 table{{width:100%;border-collapse:collapse}} th,td{{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:12px}}
 th{{color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.03em}}
 .tgt{{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
@@ -120,7 +137,14 @@ a.lnk{{color:#58a6ff;text-decoration:none}} a.lnk:hover{{text-decoration:underli
 
   <div class="grid">
     <div class="card"><h2>Findings by severity</h2>{sev_bars}</div>
-    <div class="card"><h2>Runs — last 14 days</h2><div class="days">{day_bars or '<div style="opacity:.6">—</div>'}</div></div>
+    <div class="card"><h2>Findings trend — last 14 days</h2><div class="days">{day_bars or '<div style="opacity:.6">—</div>'}</div>
+      <div class="legend">
+        <span><i style="background:{SEV_COLOR['critical']}"></i>Critical</span>
+        <span><i style="background:{SEV_COLOR['high']}"></i>High</span>
+        <span><i style="background:{SEV_COLOR['medium']}"></i>Medium</span>
+        <span><i style="background:{SEV_COLOR['info']}"></i>Low+Info</span>
+      </div>
+    </div>
   </div>
 
   <div class="card" style="margin-bottom:16px"><h2>Top targets by findings</h2>{tops}</div>

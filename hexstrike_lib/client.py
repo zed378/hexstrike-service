@@ -1,5 +1,6 @@
 """Klien REST HexStrike — satu-satunya tempat bicara HTTP ke Flask API."""
 
+import os
 import time
 from typing import Any, Dict
 
@@ -16,11 +17,15 @@ class HexStrikeClient:
     def __init__(self, base_url: str, timeout: int = 1800):
         self.base = base_url.rstrip("/")
         self.timeout = timeout
+        self._headers = {}
+        api_key = os.environ.get("HEXSTRIKE_API_KEY", "")
+        if api_key:
+            self._headers["X-API-Key"] = api_key
 
     def post(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base}/{endpoint.lstrip('/')}"
         try:
-            r = requests.post(url, json=payload, timeout=self.timeout)
+            r = requests.post(url, json=payload, headers=self._headers, timeout=self.timeout)
             r.raise_for_status()
             return r.json()
         except Exception as exc:  # noqa: BLE001

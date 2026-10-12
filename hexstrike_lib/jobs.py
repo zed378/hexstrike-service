@@ -85,10 +85,16 @@ class JobManager:
         ]
         if params.get("use_llm"):
             cmd.append("--use-llm")
+        if params.get("baseline_path"):
+            cmd += ["--baseline", params["baseline_path"]]
+        if params.get("diff_against_last"):
+            cmd.append("--diff-against-last")
         if action == "pentest":
             cmd += ["pentest", "--target", params["target"], "--profile", params["profile"]]
         else:
             cmd += ["code-scan", "--path", params.get("path", ".")]
+            if params.get("image"):
+                cmd += ["--image", params["image"]]
 
         log(f"job {job_id}: menjalankan {action} -> {params.get('target')}")
         logfile = os.path.join(report_dir, f"{action}.log")

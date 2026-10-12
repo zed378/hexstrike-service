@@ -227,6 +227,43 @@ python3 hexstrike_ci.py --fail-on high code-scan --path .
 python3 hexstrike_ci.py --fail-on high pentest --target https://staging.example --profile quick
 ```
 
+### 4.6 Granular gating, SARIF, and image/multi-target scanning
+
+- **Baseline/allowlist** (`hexstrike_lib/baseline.py`): waive known-accepted
+  findings without lowering `--fail-on` globally. Each entry is matched by a
+  `tool+title+location` fingerprint and may carry an `expires` date (after
+  which it stops suppressing automatically):
+  ```bash
+  python3 hexstrike_ci.py code-scan --path . --baseline baselines/accepted-risks.json
+  ```
+  Via webhook `/trigger` or `/scan/code`: pass `"baseline": "<filename>"` —
+  resolved **only** against `HEXSTRIKE_BASELINE_DIR` on the server (no path
+  traversal; the file is curated by the operator, not uploaded by the caller).
+- **Diff against the last run** (`--diff-against-last` / `"diff_against_last": true`):
+  marks findings that are **new** vs. the previous completed run for the same
+  `kind`+`target` (via the SQLite history), so reviewers can focus on
+  regressions instead of the whole backlog. Requires `HEXSTRIKE_DB_PATH` history
+  to exist (first run on a target just reports everything as new).
+- **SARIF export**: every `write_reports()` call now also writes
+  `hexstrike-{kind}.sarif` next to the `.json`/`.md` report — import it into
+  GitLab's Security Dashboard or GitHub code scanning as a job artifact.
+- **Image scan without building anything**: `code-scan --image <ref>` (already
+  built & pushed by your pipeline) runs `trivy image <ref>` through the
+  HexStrike API — HexStrike **never builds the image itself**.
+- **Multi-target pentest**: `pentest --target-list targets.txt` (one
+  target/line, `#` comments allowed) runs each target into its own
+  `report_dir/<slug>/`, writes a combined `hexstrike-pentest-batch.json` index,
+  and fails the gate if **any** target fails.
+
+### 4.6b Securing the HexStrike API itself (port 8888)
+
+`hexstrike_server.py` can execute arbitrary commands via `/api/command` and
+related endpoints, and must bind `0.0.0.0` for the Docker port mapping to work
+— so it is **not** safe to expose without a credential. Set `HEXSTRIKE_API_KEY`
+on the server; every non-`/health` request then needs header `X-API-Key: <key>`.
+`hexstrike_ci.py`, the webhook, and the MCP bridge all read `HEXSTRIKE_API_KEY`
+from the environment automatically and attach it to their requests.
+
 ### 4.7 Remote / endpoint mode (HexStrike on a VPS, called from CI)
 
 Instead of running a HexStrike image *inside* each CI job, you can run HexStrike

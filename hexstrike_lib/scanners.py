@@ -5,8 +5,11 @@ import os
 import shlex
 from typing import List, Optional
 
+from . import db as db_module
 from .ai_summary import ai_summary
+from .baseline import apply_baseline, diff_against_previous, load_baseline
 from .client import HexStrikeClient
+from .config import DB_PATH
 from .local_tools import run_gitleaks, run_semgrep
 from .logging_util import make_log
 from .parsers import parse_checkov, parse_nuclei, parse_trivy
@@ -15,7 +18,18 @@ from .reporting import gate, write_reports
 log = make_log()
 
 
-def code_scan(server: str, path: str, report_dir: str, fail_on: str, use_llm: bool = False) -> int:
+def _previous_findings(kind: str, target: str) -> Optional[List[dict]]:
+    """Findings run sebelumnya (utk diff "new vs existing"). None bila DB tak ada/kosong."""
+    try:
+        return db_module.get_last_findings(DB_PATH, kind, target)
+    except Exception as exc:  # noqa: BLE001
+        log(f"… diff histori tidak tersedia ({exc}), semua temuan dianggap baru")
+        return None
+
+
+def code_scan(server: str, path: str, report_dir: str, fail_on: str, use_llm: bool = False,
+              baseline_path: Optional[str] = None, diff_against_last: bool = False,
+              image: Optional[str] = None) -> int:
     hs = HexStrikeClient(server)
     if not hs.wait_healthy():
         log("❌ HexStrike server tidak sehat")
@@ -40,9 +54,26 @@ def code_scan(server: str, path: str, report_dir: str, fail_on: str, use_llm: bo
     findings += run_semgrep(path)
     findings += run_gitleaks(path)
 
-    ai_text = ai_summary("code-scan", path, findings) if use_llm and findings else None
-    summary = write_reports("code-scan", path, findings, report_dir, ai_text)
-    log(f"📊 Ringkasan: {summary['counts']}")
+    if image:
+        # Image SUDAH di-build & di-push oleh pipeline/operator di luar HexStrike — kita
+        # HANYA memindainya (trivy image), dan TIDAK PERNAH membangunnya sendiri di sini.
+        log(f"🔬 trivy image {image} (vuln, secret, misconfig)…")
+        tvi = hs.post("api/tools/trivy", {
+            "scan_type": "image", "target": image, "output_format": "json",
+            "additional_args": "--scanners vuln,secret,misconfig --quiet --no-progress",
+        })
+        findings += parse_trivy(tvi.get("stdout", ""))
+
+    baseline = load_baseline(baseline_path)
+    active, waived = apply_baseline(findings, baseline)
+    new_findings = None
+    if diff_against_last:
+        new_findings, _existing = diff_against_previous(_previous_findings("code-scan", path), active)
+
+    ai_text = ai_summary("code-scan", path, active) if use_llm and active else None
+    summary = write_reports("code-scan", path, active, report_dir, ai_text,
+                            waived=waived, new_findings=new_findings)
+    log(f"📊 Ringkasan: {summary['counts']}" + (f" (diredam: {len(waived)})" if waived else ""))
     return gate(summary["counts"], fail_on)
 
 
@@ -57,7 +88,8 @@ def _resolve_auth_headers(explicit: Optional[List[str]]) -> List[str]:
 
 def pentest(server: str, target: str, report_dir: str, fail_on: str,
             profile: str = "quick", use_llm: bool = False,
-            auth_headers: Optional[List[str]] = None) -> int:
+            auth_headers: Optional[List[str]] = None,
+            baseline_path: Optional[str] = None, diff_against_last: bool = False) -> int:
     from .findings import finding  # lokal untuk hindari import siklik minor
 
     hs = HexStrikeClient(server)
@@ -97,7 +129,55 @@ def pentest(server: str, target: str, report_dir: str, fail_on: str,
             if line.strip().startswith("+ ") and ("OSVDB" in line or "vuln" in line.lower()):
                 findings.append(finding("nikto", "low", line.strip()[:200], target))
 
-    ai_text = ai_summary("pentest", target, findings) if use_llm and findings else None
-    summary = write_reports("pentest", target, findings, report_dir, ai_text)
-    log(f"📊 Ringkasan: {summary['counts']}")
+    baseline = load_baseline(baseline_path)
+    active, waived = apply_baseline(findings, baseline)
+    new_findings = None
+    if diff_against_last:
+        new_findings, _existing = diff_against_previous(_previous_findings("pentest", target), active)
+
+    ai_text = ai_summary("pentest", target, active) if use_llm and active else None
+    summary = write_reports("pentest", target, active, report_dir, ai_text,
+                            waived=waived, new_findings=new_findings)
+    log(f"📊 Ringkasan: {summary['counts']}" + (f" (diredam: {len(waived)})" if waived else ""))
     return gate(summary["counts"], fail_on)
+
+
+def pentest_batch(server: str, targets: List[str], report_dir: str, fail_on: str,
+                   profile: str = "quick", use_llm: bool = False,
+                   auth_headers: Optional[List[str]] = None,
+                   baseline_path: Optional[str] = None, diff_against_last: bool = False) -> int:
+    """Jalankan `pentest` untuk banyak target (satu per subdir report_dir/<slug>/),
+    lalu tulis index gabungan di report_dir/hexstrike-pentest-batch.json.
+    rc keseluruhan = gagal bila ADA SATU target yang gate-fail."""
+    import re as _re
+
+    os.makedirs(report_dir, exist_ok=True)
+    overall_rc = 0
+    index: List[dict] = []
+    for i, target in enumerate(targets):
+        target = target.strip()
+        if not target:
+            continue
+        slug = _re.sub(r"[^A-Za-z0-9._-]+", "_", target)[:60] or f"target{i}"
+        sub_dir = os.path.join(report_dir, slug)
+        log(f"=== [{i + 1}/{len(targets)}] pentest -> {target} ===")
+        rc = pentest(server, target, sub_dir, fail_on, profile, use_llm, auth_headers,
+                     baseline_path, diff_against_last)
+        overall_rc = overall_rc or rc
+        summary_path = os.path.join(sub_dir, "hexstrike-pentest.json")
+        counts = {}
+        if os.path.exists(summary_path):
+            import json as _json
+            with open(summary_path, "r", encoding="utf-8") as fh:
+                counts = _json.load(fh).get("counts", {})
+        index.append({"target": target, "report_dir": sub_dir, "gate_failed": rc == 1,
+                      "exit_code": rc, "counts": counts})
+
+    import json as _json
+    with open(os.path.join(report_dir, "hexstrike-pentest-batch.json"), "w", encoding="utf-8") as fh:
+        _json.dump({"targets": index, "total_targets": len(index),
+                    "failed_targets": sum(1 for x in index if x["gate_failed"])}, fh,
+                   ensure_ascii=False, indent=2)
+    failed = sum(1 for x in index if x["gate_failed"])
+    log(f"📊 Batch pentest selesai: {len(index)} target, {failed} gate-failed")
+    return overall_rc

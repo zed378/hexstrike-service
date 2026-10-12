@@ -22,7 +22,9 @@ from .analyzers import (
 decision_engine = IntelligentDecisionEngine()
 cve_intelligence = CVEIntelligenceManager()
 exploit_generator = AIExploitGenerator()
-vulnerability_correlator = VulnerabilityCorrelator()
+# cve_intelligence disuntik agar attack-chain discovery memakai CVE NVD nyata,
+# bukan data mock (lihat VulnerabilityCorrelator._find_vulnerabilities_by_pattern).
+vulnerability_correlator = VulnerabilityCorrelator(cve_intelligence)
 file_manager = FileOperationsManager()
 http_framework = HTTPTestingFramework()
 browser_agent = BrowserAgent()

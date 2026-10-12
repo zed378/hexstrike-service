@@ -14,6 +14,15 @@ HEXSTRIKE_SERVER = os.environ.get("HEXSTRIKE_SERVER", "http://localhost:8888")
 REPORT_ROOT = os.environ.get("HEXSTRIKE_REPORT_ROOT", os.path.join(ROOT, "hexstrike-reports"))
 DB_PATH = os.environ.get("HEXSTRIKE_DB_PATH", os.path.join(REPORT_ROOT, "hexstrike.db"))
 
+# Direktori file baseline/allowlist yang boleh dirujuk lewat webhook (hanya nama file,
+# tanpa path traversal — isinya dikurasi operator, bukan diupload lewat request).
+BASELINE_DIR = os.environ.get("HEXSTRIKE_BASELINE_DIR", os.path.join(ROOT, "baselines"))
+
+# API key wajib untuk memanggil HexStrike Flask API (hexstrike_server.py / port 8888)
+# langsung — endpoint itu bisa eksekusi command, jadi tidak boleh terbuka tanpa kredensial
+# di environment manapun selain localhost murni. Kosong => auth dimatikan (hanya utk dev lokal).
+HEXSTRIKE_API_KEY = os.environ.get("HEXSTRIKE_API_KEY", "")
+
 # Webhook
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 WEBHOOK_HMAC_SECRET = os.environ.get("WEBHOOK_HMAC_SECRET", "")

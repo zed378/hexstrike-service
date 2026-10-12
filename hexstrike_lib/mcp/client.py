@@ -1,6 +1,7 @@
 """Klien REST untuk MCP bridge (transport ke HexStrike API server)."""
 
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -28,6 +29,9 @@ class HexStrikeClient:
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
         self.session = requests.Session()
+        api_key = os.environ.get("HEXSTRIKE_API_KEY", "")
+        if api_key:
+            self.session.headers["X-API-Key"] = api_key
 
         # Try to connect to server with retries
         connected = False

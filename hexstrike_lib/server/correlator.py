@@ -19,15 +19,22 @@ logger = logging.getLogger(__name__)
 
 
 class VulnerabilityCorrelator:
-    """Correlate vulnerabilities for multi-stage attack chain discovery"""
+    """Correlate vulnerabilities for multi-stage attack chain discovery.
 
-    def __init__(self):
+    `cve_manager`: instance opsional CVEIntelligenceManager (lihat cve_intel.py) yang
+    dipakai untuk query NVD REAL per software/pattern. Tanpa itu, correlator tidak
+    akan mengarang CVE palsu — dia mengembalikan hasil kosong dan bilang kenapa,
+    daripada menyodorkan data mock yang kelihatan seperti temuan asli.
+    """
+
+    def __init__(self, cve_manager=None):
+        self.cve_manager = cve_manager
         self.attack_patterns = {
-            "privilege_escalation": ["local", "kernel", "suid", "sudo"],
-            "remote_execution": ["remote", "network", "rce", "code execution"],
-            "persistence": ["service", "registry", "scheduled", "startup"],
-            "lateral_movement": ["smb", "wmi", "ssh", "rdp"],
-            "data_exfiltration": ["file", "database", "memory", "network"]
+            "privilege_escalation": ["local", "kernel", "suid", "sudo", "privilege"],
+            "remote_execution": ["remote", "network", "rce", "code execution", "injection"],
+            "persistence": ["service", "registry", "scheduled", "startup", "backdoor"],
+            "lateral_movement": ["smb", "wmi", "ssh", "rdp", "lateral"],
+            "data_exfiltration": ["file", "database", "memory", "disclosure", "exfiltration"],
         }
 
         self.software_relationships = {
@@ -38,10 +45,23 @@ class VulnerabilityCorrelator:
         }
 
     def find_attack_chains(self, target_software, max_depth=3):
-        """Find multi-vulnerability attack chains"""
+        """Find multi-vulnerability attack chains berdasarkan CVE NYATA (NVD) bila
+        `cve_manager` tersedia; jika tidak, hanya mengembalikan struktur kosong +
+        alasan, TANPA fallback ke data mock (lihat juga `correlate_scan_findings`
+        untuk korelasi dari hasil scan HexStrike, bukan dari nama software saja)."""
         try:
-            # This is a simplified implementation
-            # Real version would use graph algorithms and ML
+            if not self.cve_manager:
+                return {
+                    "success": True,
+                    "target_software": target_software,
+                    "total_chains": 0,
+                    "attack_chains": [],
+                    "recommendation": (
+                        "CVE intelligence manager tidak terpasang — tidak ada data CVE nyata "
+                        "untuk dikorelasikan, jadi tidak ada chain yang dibuat (lihat "
+                        "server/context.py: VulnerabilityCorrelator(cve_intelligence))."
+                    ),
+                }
 
             chains = []
 
@@ -104,24 +124,99 @@ class VulnerabilityCorrelator:
             return {"success": False, "error": str(e)}
 
     def _find_vulnerabilities_by_pattern(self, software, pattern_type):
-        """Find vulnerabilities matching attack pattern"""
-        # Simplified mock data - real implementation would query CVE database
-        mock_vulnerabilities = [
-            {
-                "cve_id": "CVE-2024-1234",
-                "description": f"Remote code execution in {software}",
-                "cvss_score": 9.8,
-                "exploitability": "HIGH"
-            },
-            {
-                "cve_id": "CVE-2024-5678",
-                "description": f"Privilege escalation in {software}",
-                "cvss_score": 7.8,
-                "exploitability": "MEDIUM"
-            }
-        ]
+        """Cari CVE NYATA (NVD, via cve_manager) untuk `software` yang cocok dengan
+        salah satu keyword pattern `pattern_type`. Mengembalikan [] bila tidak ada
+        hasil/CVE manager tak tersedia — tidak pernah mengarang data."""
+        if not self.cve_manager:
+            return []
+        keywords = self.attack_patterns.get(pattern_type, [])
+        try:
+            # fetch_latest_cves tidak menerima keyword software secara langsung, jadi kita
+            # query NVD langsung dengan keywordSearch (software + salah satu keyword pattern)
+            # supaya hasilnya benar-benar relevan dengan software+pola yang dicari.
+            import requests as _requests  # local import: hindari dependency keras di modul ini
 
-        return mock_vulnerabilities
+            for kw in keywords[:3]:  # batasi kombinasi query demi rate-limit NVD
+                resp = _requests.get(
+                    "https://services.nvd.nist.gov/rest/json/cves/2.0",
+                    params={"keywordSearch": f"{software} {kw}", "resultsPerPage": 5},
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    continue
+                vulns = resp.json().get("vulnerabilities", [])
+                out = []
+                for item in vulns:
+                    cve = item.get("cve", {})
+                    metrics = cve.get("metrics", {})
+                    cvss_score, severity = 0.0, "UNKNOWN"
+                    for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                        if metrics.get(key):
+                            data = metrics[key][0]["cvssData"]
+                            cvss_score = data.get("baseScore", 0.0)
+                            severity = data.get("baseSeverity", severity)
+                            break
+                    descriptions = cve.get("descriptions", [])
+                    description = next((d.get("value", "") for d in descriptions if d.get("lang") == "en"), "")
+                    out.append({
+                        "cve_id": cve.get("id", "UNKNOWN"),
+                        "description": description,
+                        "cvss_score": cvss_score,
+                        "exploitability": severity,
+                    })
+                if out:
+                    return out
+            return []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"⚠️ NVD query gagal utk '{software}'/{pattern_type}: {exc}")
+            return []
+
+    def correlate_scan_findings(self, findings, max_targets=20):
+        """Korelasi NYATA dari hasil scan HexStrike (bukan nama software generik):
+        kelompokkan finding per location/target, tag tiap finding dengan attack
+        pattern berdasarkan kata kunci di title/extra, lalu bangun chain hanya
+        dari pola yang BENAR-BENAR ditemukan bersamaan pada target yang sama.
+        """
+        by_target: Dict[str, List[Dict[str, Any]]] = {}
+        for f in findings or []:
+            target = (f.get("location") or f.get("target") or "unknown").strip() or "unknown"
+            by_target.setdefault(target, []).append(f)
+
+        chains = []
+        for target, group in list(by_target.items())[:max_targets]:
+            tagged: Dict[str, List[Dict[str, Any]]] = {}
+            for f in group:
+                text = f"{f.get('title','')} {f.get('extra','')}".lower()
+                for pattern, keywords in self.attack_patterns.items():
+                    if any(kw in text for kw in keywords):
+                        tagged.setdefault(pattern, []).append(f)
+
+            if len(tagged) < 2:
+                continue  # perlu >=2 pola berbeda pada target yang sama utk disebut "chain"
+
+            stages = [
+                {"stage": i + 1, "objective": pattern, "findings": matches,
+                 "finding_count": len(matches)}
+                for i, (pattern, matches) in enumerate(tagged.items())
+            ]
+            chains.append({
+                "chain_id": f"chain_{len(chains) + 1}",
+                "target": target,
+                "stages": stages,
+                "pattern_count": len(tagged),
+                "total_findings": len(group),
+            })
+
+        return {
+            "success": True,
+            "total_chains": len(chains),
+            "attack_chains": sorted(chains, key=lambda c: -c["pattern_count"]),
+            "recommendation": (
+                f"Ditemukan {len(chains)} target dengan >=2 pola attack-chain berdasarkan "
+                f"temuan scan NYATA (bukan data mock)." if chains else
+                "Tidak ada target dengan kombinasi pola attack-chain pada run ini."
+            ),
+        }
 
     def _generate_chain_recommendations(self, chains):
         """Generate recommendations for attack chains"""

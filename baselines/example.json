@@ -1,0 +1,9 @@
+[
+  {
+    "tool": "trivy",
+    "title": "CVE-2023-00000 in example-pkg 1.0.0",
+    "location": "requirements.txt",
+    "reason": "Accepted risk — tidak exploitable di konteks kami, ditinjau oleh AppSec 2026-01-10",
+    "expires": "2026-12-31"
+  }
+]

@@ -21,6 +21,7 @@
 stages:
   - lint
   - build
+  - regression
 
 variables:
   DOCKER_TLS_CERTDIR: "/certs"
@@ -142,3 +143,34 @@ build:release:
     EXTRA_TAGS: "latest"
   rules:
     - if: "$CI_COMMIT_TAG"
+
+# ---------------------------------------------------------------------------
+# Regression scan terjadwal — HANYA memanggil webhook yang sudah deployed
+# (service hexstrike-webhook, lihat deploy/docker-compose*.yml), TIDAK build apa pun.
+#
+# Setup: GitLab > Build > Pipeline schedules > buat schedule baru (mis. tiap hari
+# jam 02:00) khusus utk job ini, lalu set CI/CD Variables:
+#   WEBHOOK_URL    -> mis. https://webhook.contoh.id:9000
+#   WEBHOOK_TOKEN  -> sama dgn WEBHOOK_TOKEN di .env server (masked)
+#   REGRESSION_TARGET -> URL/host staging/production yang mau dipantau rutin
+# ---------------------------------------------------------------------------
+regression:nightly:
+  stage: regression
+  image: curlimages/curl:8.10.1
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  script:
+    - |
+      test -n "$WEBHOOK_URL" || { echo "❌ WEBHOOK_URL belum di-set"; exit 1; }
+      test -n "$WEBHOOK_TOKEN" || { echo "❌ WEBHOOK_TOKEN belum di-set"; exit 1; }
+      test -n "$REGRESSION_TARGET" || { echo "❌ REGRESSION_TARGET belum di-set"; exit 1; }
+      echo "🌙 Memicu regression pentest terhadap ${REGRESSION_TARGET}…"
+      curl -sf -X POST "${WEBHOOK_URL}/trigger" \
+        -H "X-Webhook-Token: ${WEBHOOK_TOKEN}" -H "Content-Type: application/json" \
+        -d "{\"target\":\"${REGRESSION_TARGET}\",\"action\":\"pentest\",\"profile\":\"${REGRESSION_PROFILE:-full}\",\"fail_on\":\"${REGRESSION_FAIL_ON:-high}\",\"diff_against_last\":true}" \
+      | tee trigger-response.json
+      echo
+      echo "ℹ️  Job berjalan async di webhook — pantau via GET ${WEBHOOK_URL}/status/<job_id> atau /dashboard"
+  artifacts:
+    paths: ["trigger-response.json"]
+    expire_in: 7 days

@@ -149,7 +149,11 @@ def get_metrics(db_path: str = DEFAULT_DB, recent_limit: int = 25) -> Dict[str, 
             """
             SELECT substr(finished_at,1,10) AS day,
                    COUNT(*) AS runs,
-                   COALESCE(SUM(critical+high),0) AS crit_high
+                   COALESCE(SUM(critical+high),0) AS crit_high,
+                   COALESCE(SUM(critical),0) AS critical,
+                   COALESCE(SUM(high),0) AS high,
+                   COALESCE(SUM(medium),0) AS medium,
+                   COALESCE(SUM(low+info),0) AS low_info
             FROM reports
             WHERE finished_at IS NOT NULL
             GROUP BY day ORDER BY day DESC LIMIT 14
@@ -192,6 +196,29 @@ def get_report(db_path: str, run_id: str) -> Optional[Dict[str, Any]]:
     out = dict(row)
     out["findings"] = [dict(f) for f in findings]
     return out
+
+
+def get_last_findings(db_path: str, kind: str, target: str,
+                       exclude_run_id: Optional[str] = None) -> Optional[List[Dict[str, str]]]:
+    """Findings dari run TERAKHIR yang sudah selesai untuk `kind`+`target` yang sama
+    (dipakai untuk diff "new vs existing" terhadap run saat ini). None bila belum ada histori."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT run_id FROM reports
+            WHERE kind = ? AND target = ? AND status = 'completed'
+              AND run_id != COALESCE(?, '')
+            ORDER BY finished_at DESC LIMIT 1
+            """,
+            (kind, target, exclude_run_id),
+        ).fetchone()
+        if not row:
+            return None
+        findings = conn.execute(
+            "SELECT tool, severity, title, location FROM findings WHERE run_id = ?",
+            (row["run_id"],),
+        ).fetchall()
+    return [dict(f) for f in findings]
 
 
 def get_reports_by_id(db_path: str, ident: str) -> List[Dict[str, Any]]:

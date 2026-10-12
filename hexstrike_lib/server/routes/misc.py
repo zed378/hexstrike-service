@@ -430,6 +430,26 @@ def discover_attack_chains():
             "error": f"Server error: {str(e)}"
         }), 500
 
+
+@bp.route("/api/vuln-intel/correlate-findings", methods=["POST"])
+def correlate_scan_findings():
+    """Korelasi attack-chain dari hasil scan NYATA (bukan nama software generik):
+    terima daftar findings (tool/severity/title/location/extra — format yang sama
+    dipakai hexstrike_ci.py) lalu kelompokkan per target & tag pola attack-chain."""
+    try:
+        params = request.json or {}
+        findings = params.get("findings", [])
+        if not isinstance(findings, list) or not findings:
+            return jsonify({"success": False, "error": "'findings' (list, non-empty) wajib"}), 400
+
+        logger.info(f"🔗 Correlating {len(findings)} findings utk attack-chain discovery")
+        result = vulnerability_correlator.correlate_scan_findings(findings)
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"💥 Error correlating findings: {str(e)}")
+        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
+
+
 @bp.route("/api/vuln-intel/threat-feeds", methods=["POST"])
 def threat_intelligence_feeds():
     """Aggregate and correlate threat intelligence from multiple sources"""

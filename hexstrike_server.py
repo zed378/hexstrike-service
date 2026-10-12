@@ -38,11 +38,14 @@ app.config["JSON_SORT_KEYS"] = False
 API_PORT = int(os.environ.get("HEXSTRIKE_PORT", 8888))
 API_HOST = os.environ.get("HEXSTRIKE_HOST", "127.0.0.1")
 
+from hexstrike_lib.server.api_auth import api_key_guard, warn_if_unprotected
 from hexstrike_lib.server.execution import CACHE_SIZE, CACHE_TTL, COMMAND_TIMEOUT, DEBUG_MODE
 from hexstrike_lib.server.visual import ModernVisualEngine
 from hexstrike_lib.server import routes as _routes
 
 _routes.register_all(app)
+app.before_request(api_key_guard)
+warn_if_unprotected()
 
 # Create the banner after all classes are defined
 BANNER = ModernVisualEngine.create_banner()
