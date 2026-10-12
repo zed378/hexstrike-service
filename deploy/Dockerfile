@@ -189,6 +189,15 @@ RUN mkdir -p /opt/tools/bin \
     && git clone --depth 1 https://github.com/docker/docker-bench-security /opt/tools/docker-bench-security \
     && ln -sf /opt/tools/docker-bench-security/docker-bench-security.sh /opt/tools/bin/docker-bench-security
 
+# jq WAJIB ada sebelum blok kube-bench/terrascan/gitleaks di bawah (semuanya
+# parse JSON GitHub API). Diinstall ulang EKSPLISIT di sini, bukan cuma andalan
+# `jq` dari daftar apt raksasa di langkah (2) — build terbukti bisa lanjut
+# dengan jq TIDAK terpasang (root cause error "jq: not found" yg bikin GL_VER
+# kosong/rusak lalu curl gitleaks gagal "Failure writing output to destination").
+RUN apt-get update && apt-get install -y --no-install-recommends jq \
+    && rm -rf /var/lib/apt/lists/* \
+    && jq --version
+
 # Trivy (installer resmi) + kube-bench + terrascan
 RUN curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
         | sh -s -- -b /usr/local/bin || echo "WARN: trivy install failed"
